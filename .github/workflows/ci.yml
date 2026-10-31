@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.os }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint (ESLint + tsc)
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Install global (npm install -g .)
+        run: npm install -g .
+
+      - name: Smoke test — PowerShell
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          logis-pr --version
+          logis-pr --help | Select-String "dry-run"
+          $env:LOGIS_PR_ASCII = "1"
+          logis-pr doctor; if ($LASTEXITCODE -eq 0) { throw "doctor seharusnya gagal tanpa config" } else { exit 0 }
+
+      - name: Smoke test — cmd
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          logis-pr --version || exit /b 1
+          logis-pr -h | findstr /C:"--no-teams" || exit /b 1
+
+      - name: Smoke test — zsh
+        if: runner.os == 'macOS'
+        shell: zsh {0}
+        run: |
+          set -e
+          logis-pr --version
+          logis-pr --help | grep -q -- '--dry-run'
+          if logis-pr doctor; then echo "doctor seharusnya gagal tanpa config"; exit 1; fi
+
+  runtime-node20:
+    name: ${{ matrix.os }} · bundel di Node 20
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Jalankan bundel di Node 20
+        run: |
+          node --version
+          node dist/cli.js --version
+          node dist/cli.js --help
