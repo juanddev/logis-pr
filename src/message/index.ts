@@ -51,7 +51,7 @@ export function buildDesc(summary: string, service: string): string {
 export function ensureCommitPrefix(message: string, ticketKey: string): string {
   const msg = message.trim();
   if (!msg) throw new CliError('Pesan commit tidak boleh kosong.', { hint: 'Contoh: logis-pr -m "tambah validasi"' });
-  const re = new RegExp(`^\\[?${escapeRegExp(ticketKey)}(?![0-9])`, 'i');
+  const re = new RegExp(`(?:^|[^A-Za-z0-9])${escapeRegExp(ticketKey)}(?![0-9])`, 'i');
   return re.test(msg) ? msg : `${ticketKey}: ${msg}`;
 }
 
