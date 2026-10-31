@@ -8,7 +8,7 @@ logis-pr -m "pesan commit"
 
 menjalankan berurutan:
 
-1. **Commit & push** — `git add --all` + commit dengan prefix `LOGIS-XXXX: ` otomatis (bila belum ada), lalu `git push --set-upstream origin <branch>`. Working tree bersih → langsung push.
+1. **Commit & push** — `git add --all` + commit dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya), lalu `git push --set-upstream origin <branch>`. Working tree bersih → langsung push.
 2. **Pull Request** via `gh` ke base branch (`development` secara default). PR open untuk branch ini sudah ada → dipakai ulang, tidak diduplikasi. Judul PR = pesan commit terakhir (ber-prefix tiket).
 3. **Jira → Code Review** via REST API v3 (GET transitions → pilih transisi yang status tujuan/namanya cocok, case-insensitive → POST). Sudah di Code Review → dilewati. Transisi tidak tersedia → warning + daftar transisi, proses tetap lanjut.
 4. **Teams** — preview pesan, konfirmasi `[Y/n]`, lalu kirim ke grup chat **Oknum LOGis** dengan format persis:
@@ -194,11 +194,12 @@ Incoming Webhook (connector lama) **tidak bisa** mengirim ke group chat. Solusin
    - **Post as:** `User`
    - **Post in:** `Group chat`
    - **Group chat:** pilih **Oknum LOGis** (Anda harus anggota grup tersebut)
-   - **Message:** klik ikon *fx* / *Insert expression* (di designer baru ketik `/` → *Insert expression*), isi:
+   - **Message:** klik ikon **fx** (tombol biru di kanan kolom Message) untuk membuka editor expression. Di kotak expression, ketik persis (TANPA garis miring `/` di depan):
      ```text
      triggerBody()?['html']
      ```
-     lalu **Add/OK**. Field Message adalah editor HTML, sehingga `<br>` menjadi baris baru dan `<a href>` menjadi link yang bisa diklik.
+     lalu klik **Update**. Di kolom Message akan muncul chip `triggerBody()` — itu normal (Power Automate hanya menampilkan nama fungsinya). Field Message adalah editor HTML, sehingga `<br>` menjadi baris baru dan `<a href>` menjadi link yang bisa diklik.
+     > Di designer baru, mengetik `/` **di kolom Message** hanya membuka menu *Insert expression*; jangan ikut mengetik `/` di kotak expression. Cek lewat *Code view* `</>` di kolom Message: isinya harus `@{triggerBody()?['html']}`.
 5. **Save**. Buka lagi trigger, salin **HTTP URL** (muncul setelah disimpan).
 6. Jalankan `logis-pr init`, pilih *Teams Workflows*, tempel URL tersebut.
 7. Uji: `logis-pr doctor --test-teams` → pesan uji muncul di grup Oknum LOGis atas nama Anda.
@@ -243,7 +244,7 @@ logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 
 | Opsi | Keterangan |
 | --- | --- |
-| `-m, --message <pesan>` | pesan commit; prefix `LOGIS-XXXX: ` ditambahkan bila belum ada |
+| `-m, --message <pesan>` | pesan commit; prefix `LOGIS-XXXX: ` ditambahkan bila key tiket belum ada di pesan |
 | `-t, --ticket <key>` | override key tiket dari nama branch (`LOGIS-3938` atau `3938`) |
 | `-b, --base <branch>` | base branch PR (default `baseBranch`) |
 | `-d, --draft` | buat PR sebagai draft |
@@ -258,6 +259,9 @@ Contoh:
 ```text
 # Alur harian
 logis-pr -m "tambah enrichment shipment & driver"
+
+# Format commit tim: dipakai apa adanya (key tiket sudah ada → tanpa prefix tambahan)
+logis-pr -m "ver:1.0.0 tkt:LOGIS-3938 msg:tambah enrichment shipment & driver"
 
 # Sudah commit manual, tinggal push + PR + Jira + Teams
 logis-pr

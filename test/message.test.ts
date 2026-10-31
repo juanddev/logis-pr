@@ -89,6 +89,18 @@ describe('ensureCommitPrefix', () => {
   it('key lain (LOGIS-39380) tetap diberi prefix', () => {
     expect(ensureCommitPrefix('LOGIS-39380: x', 'LOGIS-3938')).toBe('LOGIS-3938: LOGIS-39380: x');
   });
+  it.each([
+    'ver:1.0.0 tkt:LOGIS-3938 msg:add logis-pr guide',
+    'ver:1.0.0 tkt:logis-3938 msg:x',
+    'fix(order): null check (LOGIS-3938)',
+  ])('key di tengah pesan → tidak diberi prefix: %s', (m) => {
+    expect(ensureCommitPrefix(m, 'LOGIS-3938')).toBe(m);
+  });
+  it('format tim dengan key lain tetap diberi prefix', () => {
+    expect(ensureCommitPrefix('ver:1.0.0 tkt:LOGIS-39380 msg:x', 'LOGIS-3938')).toBe(
+      'LOGIS-3938: ver:1.0.0 tkt:LOGIS-39380 msg:x',
+    );
+  });
   it('menolak pesan kosong', () => {
     expect(() => ensureCommitPrefix('   ', 'LOGIS-1')).toThrow(/kosong/);
   });

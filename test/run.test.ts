@@ -167,6 +167,14 @@ describe('runPr — alur lengkap', () => {
     expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ title: 'LOGIS-3938: commit lama' }));
   });
 
+  it('format commit tim (ver/tkt/msg) dipakai apa adanya untuk commit & judul PR', async () => {
+    const w = createWorld();
+    const msg = 'ver:1.0.0 tkt:LOGIS-3938 msg:add logis-pr guide';
+    await runPr({ ...baseOpts, message: msg }, w.deps());
+    expect(w.state.commits).toEqual([msg]);
+    expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ title: msg }));
+  });
+
   it('opsi -b, -d, -t diteruskan', async () => {
     const w = createWorld({ branch: 'feature/no-key' });
     const res = await runPr({ ...baseOpts, base: 'staging', draft: true, ticket: '4001' }, w.deps());

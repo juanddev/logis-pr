@@ -45,8 +45,10 @@ export function buildDesc(summary: string, service: string): string {
 }
 
 /**
- * Tambahkan prefix `LOGIS-XXXX: ` ke pesan commit bila belum diawali key tiket
- * (`LOGIS-3938: ...`, `LOGIS-3938 ...`, atau `[LOGIS-3938] ...`).
+ * Tambahkan prefix `LOGIS-XXXX: ` ke pesan commit bila key tiket BELUM muncul di mana pun dalam
+ * pesan. Pesan yang sudah memuat key dibiarkan apa adanya, sehingga format tim seperti
+ * `ver:1.0.0 tkt:LOGIS-3938 msg:...`, `LOGIS-3938: ...`, atau `[LOGIS-3938] ...` tidak berubah.
+ * Key harus berdiri sendiri: `LOGIS-39380` tidak dianggap sama dengan `LOGIS-3938`.
  */
 export function ensureCommitPrefix(message: string, ticketKey: string): string {
   const msg = message.trim();

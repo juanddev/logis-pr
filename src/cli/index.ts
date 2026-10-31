@@ -81,7 +81,7 @@ function buildProgram(): Command {
     .version(VERSION, '-v, --version', 'tampilkan versi')
     .helpOption('-h, --help', 'tampilkan bantuan')
     .helpCommand(false)
-    .option('-m, --message <pesan>', 'pesan commit (prefix LOGIS-XXXX: ditambahkan otomatis)')
+    .option('-m, --message <pesan>', 'pesan commit (prefix LOGIS-XXXX: ditambahkan bila key tiket belum ada)')
     .option('-t, --ticket <key>', 'override key tiket dari nama branch (mis. LOGIS-3938)')
     .option('-b, --base <branch>', 'base branch PR (default dari config: baseBranch)')
     .option('-d, --draft', 'buat PR sebagai draft')
