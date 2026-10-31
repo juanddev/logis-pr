@@ -58,7 +58,7 @@ export async function runDoctor(log: Logger, opts: { testTeams?: boolean } = {})
   await check('gh', async () => ['ok', await gh.version()]);
   await check('gh login', async () => {
     const a = await gh.authStatus();
-    return a.ok ? ['ok', a.detail || 'sudah login'] : ['fail', 'belum login', 'Jalankan: gh auth login'];
+    return a.ok ? ['ok', a.detail || 'sudah login'] : ['fail', a.detail || 'belum login', 'Cek detail dengan: gh auth status. Bila GH_TOKEN/GITHUB_TOKEN ter-set di shell, hapus (unset) atau perbarui. Lalu: gh auth login'];
   });
 
   log.step('Config');

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPr, type GitHubLike, type GitLike, type JiraLike, type RunDeps, type RunOptions } from '../src/cli/run.js';
 import { DEFAULT_CONFIG, type Config } from '../src/config/index.js';
+import type { WorkingTreeStatus } from '../src/git/index.js';
 import type { PullRequest } from '../src/github/index.js';
 import { pickTransition, type JiraTransition, type TransitionOutcome } from '../src/jira/index.js';
 import type { TeamsPayload } from '../src/teams/index.js';
@@ -19,10 +20,14 @@ const config: Config = {
 };
 
 /** Dunia palsu yang menyimpan state, sehingga run kedua melihat hasil run pertama. */
-function createWorld(over: { branch?: string | null; dirty?: boolean; status?: string; transitions?: JiraTransition[] } = {}) {
+function createWorld(
+  over: { branch?: string | null; dirty?: boolean; wt?: WorkingTreeStatus; status?: string; transitions?: JiraTransition[] } = {},
+) {
+  const clean: WorkingTreeStatus = { staged: [], unstaged: [], untracked: [] };
   const state = {
     branch: over.branch === undefined ? 'feature/LOGIS-3938-bulk-last-route' : over.branch,
-    dirty: over.dirty ?? true,
+    wt: over.wt ?? (over.dirty === false ? clean : { staged: [], unstaged: ['src/a.ts'], untracked: ['src/b.ts'] }),
+    committedFiles: [] as string[][],
     commits: [] as string[],
     pushes: 0,
     prs: [] as PullRequest[],
@@ -42,12 +47,20 @@ function createWorld(over: { branch?: string | null; dirty?: boolean; status?: s
     version: async () => 'git version 2.47.0.windows.1',
     isRepo: async () => true,
     currentBranch: async () => state.branch,
-    isDirty: async () => state.dirty,
-    changedFiles: async () => (state.dirty ? [' M src/a.ts', '?? src/b.ts'] : []),
+    status: async () => structuredClone(state.wt),
     remoteUrl: async () => `https://github.com/${REPO}.git`,
-    commitAll: vi.fn(async (m: string) => {
+    stageTracked: vi.fn(async () => {
+      state.wt.staged.push(...state.wt.unstaged);
+      state.wt.unstaged = [];
+    }),
+    stagePaths: vi.fn(async (paths: readonly string[]) => {
+      state.wt.staged.push(...paths);
+      state.wt.untracked = state.wt.untracked.filter((p) => !paths.includes(p));
+    }),
+    commitStaged: vi.fn(async (m: string) => {
       state.commits.push(m);
-      state.dirty = false;
+      state.committedFiles.push([...state.wt.staged]);
+      state.wt.staged = [];
     }),
     push: vi.fn(async () => {
       state.pushes++;
@@ -162,7 +175,7 @@ describe('runPr — alur lengkap', () => {
   it('working tree bersih tanpa -m → langsung push, judul PR dari commit terakhir', async () => {
     const w = createWorld({ dirty: false });
     await runPr({ jira: true, teams: true }, w.deps());
-    expect(w.git.commitAll).not.toHaveBeenCalled();
+    expect(w.git.commitStaged).not.toHaveBeenCalled();
     expect(w.state.pushes).toBe(1);
     expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ title: 'LOGIS-3938: commit lama' }));
   });
@@ -183,20 +196,97 @@ describe('runPr — alur lengkap', () => {
   });
 });
 
+describe('runPr — file yang ikut commit (tanpa git add --all)', () => {
+  const opts = { ...baseOpts, yes: true };
+
+  it('default: hanya file terlacak; file baru ditanya dengan default Tidak', async () => {
+    const w = createWorld();
+    const confirm = vi.fn(async (_q: string, d: boolean) => d);
+    await runPr(baseOpts, w.deps({ confirm }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Ikutkan 1 file baru'), false);
+    expect(w.state.committedFiles).toEqual([['src/a.ts']]);
+    expect(w.git.stagePaths).not.toHaveBeenCalled();
+    expect(w.state.wt.untracked).toEqual(['src/b.ts']);
+  });
+
+  it('jawab y → file baru ikut', async () => {
+    const w = createWorld();
+    await runPr(baseOpts, w.deps({ confirm: async () => true }));
+    expect(w.state.committedFiles).toEqual([['src/a.ts', 'src/b.ts']]);
+  });
+
+  it('-a → file baru ikut tanpa ditanya', async () => {
+    const w = createWorld();
+    const confirm = vi.fn(async () => false);
+    await runPr({ ...opts, all: true }, w.deps({ confirm }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(w.state.committedFiles).toEqual([['src/a.ts', 'src/b.ts']]);
+  });
+
+  it('-y tanpa -a → file baru tidak ikut, tanpa ditanya', async () => {
+    const w = createWorld();
+    const confirm = vi.fn(async () => true);
+    await runPr(opts, w.deps({ confirm }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(w.state.committedFiles).toEqual([['src/a.ts']]);
+  });
+
+  it('non-interaktif tanpa -a → file baru tidak ikut + warning', async () => {
+    const w = createWorld();
+    await runPr({ ...baseOpts }, w.deps({ interactive: false }));
+    expect(w.state.committedFiles).toEqual([['src/a.ts']]);
+    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('Pakai -a'))).toBe(true);
+  });
+
+  it('sudah ada file di-stage → hanya itu yang di-commit, tidak ada git add', async () => {
+    const w = createWorld({ wt: { staged: ['README.md'], unstaged: ['src/a.ts'], untracked: ['.DS_Store'] } });
+    const confirm = vi.fn(async () => true);
+    await runPr({ ...opts, all: true }, w.deps({ confirm }));
+    expect(w.git.stageTracked).not.toHaveBeenCalled();
+    expect(w.git.stagePaths).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(w.state.committedFiles).toEqual([['README.md']]);
+  });
+
+  it('repo git terpisah (folder/) tidak pernah ikut, bahkan dengan -a', async () => {
+    const w = createWorld({ wt: { staged: [], unstaged: ['README.md'], untracked: ['src/shared-libs/', '.DS_Store'] } });
+    await runPr({ ...opts, all: true }, w.deps());
+    expect(w.state.committedFiles).toEqual([['README.md', '.DS_Store']]);
+    expect(w.log.lines.some((l) => l.includes("'src/shared-libs/' adalah repo git terpisah"))).toBe(true);
+  });
+
+  it('hanya file baru, ditolak → tidak ada commit, lanjut push & PR', async () => {
+    const w = createWorld({ wt: { staged: [], unstaged: [], untracked: ['notes.txt'] } });
+    const res = await runPr(baseOpts, w.deps({ confirm: async () => false }));
+    expect(w.git.commitStaged).not.toHaveBeenCalled();
+    expect(res.committed).toBe(false);
+    expect(w.state.pushes).toBe(1);
+  });
+
+  it('file yang kemungkinan rahasia ditandai', async () => {
+    const w = createWorld({ wt: { staged: [], unstaged: ['README.md'], untracked: ['.env.local'] } });
+    await runPr(baseOpts, w.deps({ confirm: async () => false }));
+    expect(w.log.lines.some((l) => l.includes('.env.local') && l.includes('rahasia'))).toBe(true);
+  });
+});
+
 describe('runPr — dry-run', () => {
   it('tidak commit, push, membuat PR, transisi, kirim Teams, atau copy', async () => {
     const w = createWorld();
     const sendTeams = vi.fn();
     const res = await runPr({ ...baseOpts, dryRun: true }, w.deps({ sendTeams }));
-    expect(w.git.commitAll).not.toHaveBeenCalled();
+    expect(w.git.commitStaged).not.toHaveBeenCalled();
     expect(w.git.push).not.toHaveBeenCalled();
+    expect(w.git.stageTracked).not.toHaveBeenCalled();
+    expect(w.git.stagePaths).not.toHaveBeenCalled();
     expect(w.gh.createPr).not.toHaveBeenCalled();
     expect(w.state.posts).toBe(0);
     expect(sendTeams).not.toHaveBeenCalled();
     expect(w.state.copied).toEqual([]);
     expect(res).toMatchObject({ jira: 'planned', teams: 'planned' });
     expect(res.message.text).toContain('Task: Review PR LOGIS-3938');
-    expect(w.log.lines.join('\n')).toMatch(/\[dry-run\] Akan commit 2 file: "LOGIS-3938: tambah enrichment"/);
+    expect(w.log.lines.join('\n')).toMatch(/\[dry-run\] Akan commit 1 file: "LOGIS-3938: tambah enrichment"/);
+    expect(w.log.lines.join('\n')).toMatch(/Ada 1 file baru .* default TIDAK ikut/);
   });
 });
 
@@ -274,7 +364,7 @@ describe('runPr — validasi awal (gagal kritis, tidak ada efek samping)', () =>
     const w = createWorld();
     mutate(w);
     await expect(runPr(baseOpts, w.deps())).rejects.toThrow(re);
-    expect(w.git.commitAll).not.toHaveBeenCalled();
+    expect(w.git.commitStaged).not.toHaveBeenCalled();
     expect(w.git.push).not.toHaveBeenCalled();
     expect(w.gh.createPr).not.toHaveBeenCalled();
   });

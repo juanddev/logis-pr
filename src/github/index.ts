@@ -41,14 +41,33 @@ export class GitHub {
   }
 
   /** gh sudah login ke host? `gh auth status` keluar dengan kode non-zero bila belum. */
+  /**
+   * Apakah gh bisa dipakai untuk host ini?
+   *
+   * `gh auth status` keluar dengan kode non-zero bila SALAH SATU akun bermasalah — mis. akun lain
+   * di keyring yang tokennya kedaluwarsa, atau env GH_TOKEN/GITHUB_TOKEN yang tidak valid — walau
+   * akun aktif baik-baik saja. Karena itu: cek akun aktif saja (`--active`), lalu bila masih gagal,
+   * verifikasi langsung dengan memanggil API (`gh api user`). Lolos API = token benar-benar berfungsi.
+   */
   async authStatus(host = 'github.com'): Promise<{ ok: boolean; detail: string }> {
-    const res = await this.exec(['auth', 'status', '--hostname', host]);
+    const res = await this.exec(['auth', 'status', '--active', '--hostname', host]);
     const detail = lines(`${res.stdout}\n${res.stderr}`)
       .map((l) => l.trim())
-      .filter((l) => /logged in|account|not logged|token invalid|failed/i.test(l))
+      .filter((l) => /logged in|account|not logged|token invalid|failed|GH_TOKEN|GITHUB_TOKEN/i.test(l))
       .filter((l) => !/token:/i.test(l)) // jangan pernah cetak token
       .join(' | ');
-    return { ok: res.code === 0, detail };
+    if (res.code === 0) return { ok: true, detail };
+
+    const api = await this.exec(['api', 'user', '--hostname', host, '--jq', '.login']);
+    const login = api.stdout.trim();
+    if (api.code === 0 && login) return { ok: true, detail: `login sebagai ${login}` };
+
+    const apiErr = lines(api.stderr)
+      .map((l) => l.trim())
+      .filter((l) => !/token:/i.test(l))
+      .slice(0, 2)
+      .join(' | ');
+    return { ok: false, detail: detail || apiErr };
   }
 
   /** PR open untuk branch ini (milik owner repo yang sama), bila ada. */

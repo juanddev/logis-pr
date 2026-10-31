@@ -8,7 +8,7 @@ logis-pr -m "pesan commit"
 
 menjalankan berurutan:
 
-1. **Commit & push** — `git add --all` + commit dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya), lalu `git push --set-upstream origin <branch>`. Working tree bersih → langsung push.
+1. **Commit & push** — commit perubahan file yang sudah dilacak git (file baru ditanya dulu, lihat [File yang ikut commit](#file-yang-ikut-commit)) dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya), lalu `git push --set-upstream origin <branch>`. Working tree bersih → langsung push.
 2. **Pull Request** via `gh` ke base branch (`development` secara default). PR open untuk branch ini sudah ada → dipakai ulang, tidak diduplikasi. Judul PR = pesan commit terakhir (ber-prefix tiket).
 3. **Jira → Code Review** via REST API v3 (GET transitions → pilih transisi yang status tujuan/namanya cocok, case-insensitive → POST). Sudah di Code Review → dilewati. Transisi tidak tersedia → warning + daftar transisi, proses tetap lanjut.
 4. **Teams** — preview pesan, konfirmasi `[Y/n]`, lalu kirim ke grup chat **Oknum LOGis** dengan format persis:
@@ -247,8 +247,9 @@ logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 | `-m, --message <pesan>` | pesan commit; prefix `LOGIS-XXXX: ` ditambahkan bila key tiket belum ada di pesan |
 | `-t, --ticket <key>` | override key tiket dari nama branch (`LOGIS-3938` atau `3938`) |
 | `-b, --base <branch>` | base branch PR (default `baseBranch`) |
+| `-a, --all` | ikutkan file baru (untracked) ke commit tanpa ditanya |
 | `-d, --draft` | buat PR sebagai draft |
-| `-y, --yes` | kirim ke Teams tanpa konfirmasi |
+| `-y, --yes` | lewati semua konfirmasi: Teams dikirim, file baru **tidak** ikut (pakai `-a` bila perlu) |
 | `--no-jira` | jangan pindahkan status tiket (summary tetap dibaca bila kredensial ada) |
 | `--no-teams` | jangan kirim pesan Teams |
 | `--dry-run` | tampilkan semua yang AKAN dilakukan; tidak commit/push/PR/transisi/pesan |
@@ -265,6 +266,9 @@ logis-pr -m "ver:1.0.0 tkt:LOGIS-3938 msg:tambah enrichment shipment & driver"
 
 # Sudah commit manual, tinggal push + PR + Jira + Teams
 logis-pr
+
+# Ada file baru (modul baru) yang memang mau di-commit
+logis-pr -a -m "ver:1.0.0 tkt:LOGIS-3938 msg:tambah modul vehicle capacity"
 
 # PR draft tanpa pengumuman
 logis-pr -m "wip" -d --no-teams
@@ -305,6 +309,28 @@ Preview pesan: ...
 
 Log ditulis ke stderr; stdout hanya berisi link PR, sehingga bisa dipakai di skrip: `$pr = logis-pr -y` (PowerShell) atau `pr=$(logis-pr -y)` (zsh).
 
+### File yang ikut commit
+
+logis-pr **tidak pernah** menjalankan `git add --all`, supaya file yang tidak sengaja ada di folder (`.DS_Store`, config editor, `.env`, repo lain) tidak ikut ter-commit.
+
+| Situasi | Yang di-commit |
+| --- | --- |
+| Sudah ada file yang Anda `git add` sendiri | **hanya** file yang di-stage itu (pilihan Anda dihormati) |
+| Belum ada yang di-stage | perubahan file yang **sudah dilacak git** (`git add --update`: ubah & hapus) |
+| Ada file baru (`??`) | ditampilkan, lalu ditanya *"Ikutkan file baru ini? [y/N]"* — default **tidak** |
+| Ada file baru + `-a` | file baru ikut tanpa ditanya |
+| Ada file baru + `-y` atau terminal non-interaktif | file baru **tidak** ikut, muncul warning |
+| Folder repo git terpisah (mis. `src/shared-libs/`) | **tidak pernah** ikut, bahkan dengan `-a` |
+
+File yang namanya mirip file rahasia (`.env*`, `*.pem`, `*.key`, `id_rsa`, `credentials`, `secrets`, `.npmrc`) diberi tanda ⚠ saat ditanyakan. `--dry-run` menampilkan file mana yang ikut dan mana yang tidak.
+
+Saran: abaikan file sistem/editor secara global sekali saja:
+
+```bash
+printf '.DS_Store\n.zed/\n.idea/\n.vscode/\n' >> ~/.gitignore_global
+git config --global core.excludesFile ~/.gitignore_global
+```
+
 ### Validasi di awal (gagal = exit code 1, tanpa efek samping)
 
 git & gh terpasang · gh sudah login · berada di repo git · bukan detached HEAD · bukan di base branch · remote origin adalah repo GitHub · key tiket ditemukan · config lengkap · ada perubahan tetapi `-m` tidak diberikan · tiket bisa diakses di Jira.
@@ -318,7 +344,7 @@ git & gh terpasang · gh sudah login · berada di repo git · bukan detached HEA
 
 | Situasi saat dijalankan ulang | Perilaku |
 | --- | --- |
-| Working tree bersih | tidak commit; push tetap dijalankan (no-op bila sudah sinkron) |
+| Working tree bersih / tidak ada file yang ikut | tidak commit; push tetap dijalankan (no-op bila sudah sinkron) |
 | PR open untuk branch sudah ada | dipakai ulang, tidak membuat PR baru |
 | `gh pr create` balapan ("already exists") | PR yang ada diambil |
 | Tiket sudah di Code Review | tidak ada POST transisi |

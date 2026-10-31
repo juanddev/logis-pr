@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Git, parseRemoteUrl } from '../src/git/index.js';
+import { Git, isEmbeddedRepo, looksSensitive, parseRemoteUrl, planCommit } from '../src/git/index.js';
 import { GitHub } from '../src/github/index.js';
 import { lines, normalizeEol } from '../src/utils/exec.js';
 import { fakeRunner } from './helpers.js';
@@ -29,19 +29,44 @@ describe('parseRemoteUrl', () => {
 });
 
 describe('Git (git di-mock)', () => {
-  it('commitAll: git add lalu commit dengan pesan via stdin, tanpa shell', async () => {
+  it('tidak pernah memakai git add --all', async () => {
     const { runner, calls } = fakeRunner(() => ({}));
-    await new Git(runner, '/repo').commitAll('LOGIS-1: pesan "dengan" kutip & $simbol');
-    expect(calls.map((c) => c.command)).toEqual(['git', 'git']);
-    expect(calls[0]?.args.slice(-2)).toEqual(['add', '--all']);
-    expect(calls[1]?.args.slice(-2)).toEqual(['commit', '--file=-']);
-    expect(calls[1]?.options?.input).toBe('LOGIS-1: pesan "dengan" kutip & $simbol\n');
-    expect(calls[1]?.options?.cwd).toBe('/repo');
+    const git = new Git(runner, '/repo');
+    await git.stageTracked();
+    await git.stagePaths(['a b.ts', '-n.ts']);
+    await git.commitStaged('LOGIS-1: pesan "dengan" kutip & $simbol');
+    const all = calls.flatMap((c) => c.args);
+    expect(all).not.toContain('--all');
+    expect(all).not.toContain('-A');
+    expect(calls[0]?.args.slice(-2)).toEqual(['add', '--update']);
+    // `--` mencegah nama file yang diawali '-' dibaca sebagai opsi
+    expect(calls[1]?.args.slice(-4)).toEqual(['add', '--', 'a b.ts', '-n.ts']);
+    expect(calls[2]?.args.slice(-2)).toEqual(['commit', '--file=-']);
+    expect(calls[2]?.options?.input).toBe('LOGIS-1: pesan "dengan" kutip & $simbol\n');
+    expect(calls[2]?.options?.cwd).toBe('/repo');
   });
 
-  it('commitAll: hook gagal → CliError berisi stderr', async () => {
-    const { runner } = fakeRunner((_c, args) => (args.includes('commit') ? { code: 1, stderr: 'husky - pre-commit failed' } : {}));
-    await expect(new Git(runner).commitAll('x')).rejects.toThrow(/git commit gagal:\nhusky/);
+  it('stagePaths dicicil per 50 file (batas command line Windows)', async () => {
+    const { runner, calls } = fakeRunner(() => ({}));
+    await new Git(runner).stagePaths(Array.from({ length: 120 }, (_, i) => `f${i}.ts`));
+    expect(calls).toHaveLength(3);
+  });
+
+  it('commitStaged: hook gagal → CliError berisi stderr', async () => {
+    const { runner } = fakeRunner(() => ({ code: 1, stderr: 'husky - pre-commit failed' }));
+    await expect(new Git(runner).commitStaged('x')).rejects.toThrow(/git commit gagal:\nhusky/);
+  });
+
+  it('status memparse output -z (spasi, rename, untracked, repo bersarang)', async () => {
+    const out = ['M  README.md', ' M src/a b.ts', 'R  new.ts', 'old.ts', 'MM both.ts', '?? .DS_Store', '?? src/shared-libs/', ' D gone.ts', ''].join('\0');
+    const { runner, calls } = fakeRunner(() => ({ stdout: out }));
+    const st = await new Git(runner).status();
+    expect(st).toEqual({
+      staged: ['README.md', 'new.ts', 'both.ts'],
+      unstaged: ['src/a b.ts', 'both.ts', 'gone.ts'],
+      untracked: ['.DS_Store', 'src/shared-libs/'],
+    });
+    expect(calls[0]?.args).toEqual(expect.arrayContaining(['status', '--porcelain=v1', '-z', '--untracked-files=all']));
   });
 
   it('currentBranch: null saat detached HEAD', async () => {
@@ -56,7 +81,7 @@ describe('Git (git di-mock)', () => {
 
   it('isDirty mendeteksi perubahan', async () => {
     expect(await new Git(fakeRunner(() => ({ stdout: '' })).runner).isDirty()).toBe(false);
-    expect(await new Git(fakeRunner(() => ({ stdout: ' M src/a.ts\n' })).runner).isDirty()).toBe(true);
+    expect(await new Git(fakeRunner(() => ({ stdout: ' M src/a.ts\0' })).runner).isDirty()).toBe(true);
   });
 
   it('push memakai --set-upstream dan meneruskan stdin (prompt kredensial)', async () => {
@@ -136,6 +161,29 @@ describe('GitHub (gh di-mock)', () => {
     expect(url).toBe(`https://github.com/${repo}/pull/5`);
   });
 
+  it('authStatus: auth status gagal (akun lain bermasalah) tetapi API lolos → ok', async () => {
+    const { runner, calls } = fakeRunner((_c, args) =>
+      args[0] === 'auth'
+        ? { code: 1, stdout: 'X Failed to log in to github.com account old-acc (keyring)\n' }
+        : { code: 0, stdout: 'juanddev\n' },
+    );
+    const st = await new GitHub(runner).authStatus();
+    expect(st).toEqual({ ok: true, detail: 'login sebagai juanddev' });
+    expect(calls[0]?.args).toEqual(['auth', 'status', '--active', '--hostname', 'github.com']);
+    expect(calls[1]?.args).toEqual(['api', 'user', '--hostname', 'github.com', '--jq', '.login']);
+  });
+
+  it('authStatus: auth status & API sama-sama gagal → tidak ok, dengan detail', async () => {
+    const { runner } = fakeRunner((_c, args) =>
+      args[0] === 'auth'
+        ? { code: 1, stderr: 'You are not logged into any GitHub hosts. To log in, run: gh auth login\n' }
+        : { code: 1, stderr: 'HTTP 401: Bad credentials\n' },
+    );
+    const st = await new GitHub(runner).authStatus();
+    expect(st.ok).toBe(false);
+    expect(st.detail).toMatch(/not logged/);
+  });
+
   it('authStatus: tidak pernah mengembalikan baris token', async () => {
     const { runner } = fakeRunner(() => ({
       code: 0,
@@ -145,5 +193,28 @@ describe('GitHub (gh di-mock)', () => {
     expect(st.ok).toBe(true);
     expect(st.detail).toContain('Logged in');
     expect(st.detail).not.toMatch(/gho_/);
+  });
+});
+
+describe('planCommit & helper', () => {
+  it('mode staged: hanya file staged, sisanya ditinggal', () => {
+    const p = planCommit({ staged: ['a'], unstaged: ['b'], untracked: ['c'] }, ['c']);
+    expect(p).toMatchObject({ mode: 'staged', stageTracked: false, addUntracked: [], files: ['a'] });
+    expect(p.left.sort()).toEqual(['b', 'c']);
+  });
+  it('mode tracked: file baru hanya yang disetujui & valid', () => {
+    const p = planCommit({ staged: [], unstaged: ['b'], untracked: ['c', 'd', 'repo/'] }, ['c', 'repo/', 'tidak-ada']);
+    expect(p).toMatchObject({ mode: 'tracked', stageTracked: true, addUntracked: ['c'], files: ['b', 'c'] });
+    expect(p.left).toEqual(['d', 'repo/']);
+  });
+  it('tidak ada perubahan terlacak → tidak git add --update', () => {
+    expect(planCommit({ staged: [], unstaged: [], untracked: ['x'] }).stageTracked).toBe(false);
+  });
+  it('isEmbeddedRepo & looksSensitive', () => {
+    expect(isEmbeddedRepo('src/shared-libs/')).toBe(true);
+    expect(isEmbeddedRepo('src/a.ts')).toBe(false);
+    for (const f of ['.env', 'config/.env.production', 'id_rsa', 'certs/server.pem', 'secrets.json', '.npmrc'])
+      expect(looksSensitive(f), f).toBe(true);
+    for (const f of ['README.md', 'src/environment.ts', 'docs/secret-santa.md']) expect(looksSensitive(f), f).toBe(false);
   });
 });

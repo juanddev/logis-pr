@@ -25,6 +25,7 @@ const EXAMPLES = `
 Contoh:
   logis-pr -m "tambah enrichment shipment & driver"   commit + push + PR + Jira + Teams
   logis-pr                                            working tree bersih: langsung push & lanjut
+  logis-pr -a -m "tambah modul baru"                  ikutkan file baru (untracked) tanpa ditanya
   logis-pr -m "wip" -d --no-teams                     PR draft, tanpa pesan Teams
   logis-pr -t LOGIS-3938 -b staging -y                override tiket & base, kirim tanpa konfirmasi
   logis-pr --dry-run -m "coba"                        lihat rencana tanpa mengubah apa pun
@@ -38,6 +39,7 @@ interface CliOptions {
   base?: string;
   draft?: boolean;
   yes?: boolean;
+  all?: boolean;
   jira: boolean;
   teams: boolean;
   dryRun?: boolean;
@@ -84,8 +86,9 @@ function buildProgram(): Command {
     .option('-m, --message <pesan>', 'pesan commit (prefix LOGIS-XXXX: ditambahkan bila key tiket belum ada)')
     .option('-t, --ticket <key>', 'override key tiket dari nama branch (mis. LOGIS-3938)')
     .option('-b, --base <branch>', 'base branch PR (default dari config: baseBranch)')
+    .option('-a, --all', 'ikutkan file baru (untracked) ke commit tanpa ditanya')
     .option('-d, --draft', 'buat PR sebagai draft')
-    .option('-y, --yes', 'kirim ke Teams tanpa konfirmasi')
+    .option('-y, --yes', 'lewati konfirmasi: Teams langsung dikirim, file baru tidak ikut (pakai -a)')
     .option('--no-jira', 'jangan pindahkan status tiket di Jira')
     .option('--no-teams', 'jangan kirim pesan ke Teams')
     .option('--dry-run', 'tampilkan semua yang AKAN dilakukan tanpa commit/push/PR/transisi/pesan')

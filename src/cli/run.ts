@@ -1,5 +1,5 @@
 import { missingFields, ENV_VARS, type Config } from '../config/index.js';
-import { parseRemoteUrl, type Git } from '../git/index.js';
+import { isEmbeddedRepo, looksSensitive, parseRemoteUrl, planCommit, type Git } from '../git/index.js';
 import type { GitHub, PullRequest } from '../github/index.js';
 import type { JiraClient, JiraIssue } from '../jira/index.js';
 import {
@@ -26,6 +26,8 @@ export interface RunOptions {
   base?: string;
   draft?: boolean;
   yes?: boolean;
+  /** -a/--all: ikutkan file baru (untracked) tanpa ditanya. */
+  all?: boolean;
   /** false bila --no-jira */
   jira: boolean;
   /** false bila --no-teams */
@@ -35,7 +37,16 @@ export interface RunOptions {
 
 export type GitLike = Pick<
   Git,
-  'version' | 'isRepo' | 'currentBranch' | 'isDirty' | 'changedFiles' | 'remoteUrl' | 'commitAll' | 'push' | 'lastCommitSubject'
+  | 'version'
+  | 'isRepo'
+  | 'currentBranch'
+  | 'status'
+  | 'remoteUrl'
+  | 'stageTracked'
+  | 'stagePaths'
+  | 'commitStaged'
+  | 'push'
+  | 'lastCommitSubject'
 >;
 export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr'>;
 export type JiraLike = Pick<JiraClient, 'getIssue' | 'moveToStatus'>;
@@ -105,7 +116,9 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
 
   const auth = await gh.authStatus();
   if (!auth.ok) {
-    throw new CliError('GitHub CLI belum login.', { hint: 'Jalankan: gh auth login' });
+    throw new CliError(`GitHub CLI belum login atau token tidak valid${auth.detail ? ` (${auth.detail})` : ''}.`, {
+      hint: 'Cek detail dengan: gh auth status. Bila GH_TOKEN/GITHUB_TOKEN ter-set di shell, hapus (unset) atau perbarui. Lalu: gh auth login',
+    });
   }
   log.ok('gh sudah login');
 
@@ -155,10 +168,16 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     });
   }
 
-  const dirty = await git.isDirty();
-  if (dirty && !opts.message?.trim()) {
+  const wt = await git.status();
+  const hasTrackedChanges = wt.staged.length + wt.unstaged.length > 0;
+  if (hasTrackedChanges && !opts.message?.trim()) {
     throw new CliError('Ada perubahan yang belum di-commit, tetapi pesan commit tidak diberikan.', {
       hint: 'Contoh: logis-pr -m "tambah validasi payload"',
+    });
+  }
+  if (!hasTrackedChanges && opts.all && wt.untracked.some((p) => !isEmbeddedRepo(p)) && !opts.message?.trim()) {
+    throw new CliError('Opsi -a dipakai untuk mengikutkan file baru, tetapi pesan commit tidak diberikan.', {
+      hint: 'Contoh: logis-pr -a -m "tambah modul baru"',
     });
   }
 
@@ -181,22 +200,67 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   log.step('[1/4] Commit & push');
   let committed = false;
   let commitMessage: string | undefined;
-  if (dirty) {
-    commitMessage = ensureCommitPrefix(opts.message ?? '', ticketKey);
-    if (dry) {
-      const files = await git.changedFiles();
-      log.info(`[dry-run] Akan commit ${files.length} file: "${firstLine(commitMessage)}"`);
-      for (const f of files.slice(0, 15)) log.dim(`    ${f}`);
-      if (files.length > 15) log.dim(`    … dan ${files.length - 15} file lain`);
-    } else {
-      await git.commitAll(commitMessage);
-      committed = true;
-      log.ok(`Commit: ${firstLine(commitMessage)}`);
+  const wantCommit = Boolean(opts.message?.trim());
+  const nestedRepos = wt.untracked.filter(isEmbeddedRepo);
+  const newFiles = wt.untracked.filter((p) => !isEmbeddedRepo(p));
+  const listFiles = (files: readonly string[], max = 15) => {
+    for (const f of files.slice(0, max)) {
+      log.dim(`    ${f}${looksSensitive(f) ? `  ${deps.symbols.warn} kemungkinan berisi rahasia!` : ''}`);
     }
-  } else if (opts.message?.trim()) {
-    log.warn('Working tree bersih — tidak ada yang di-commit, pesan -m diabaikan.');
+    if (files.length > max) log.dim(`    … dan ${files.length - max} file lain`);
+  };
+
+  for (const repo of nestedRepos) {
+    log.warn(`'${repo}' adalah repo git terpisah — tidak pernah ikut di-commit otomatis.`);
+  }
+
+  // Tentukan file baru yang ikut (hanya relevan bila belum ada yang di-stage manual).
+  let approvedNew: string[] = [];
+  if (wantCommit && wt.staged.length === 0 && newFiles.length > 0) {
+    if (opts.all) {
+      approvedNew = newFiles;
+      log.info(`-a: ${newFiles.length} file baru ikut di-commit.`);
+    } else if (dry) {
+      log.info(`[dry-run] Ada ${newFiles.length} file baru (belum dilacak git). Akan ditanyakan dulu, default TIDAK ikut:`);
+      listFiles(newFiles);
+    } else if (deps.interactive && !opts.yes) {
+      log.plain(`Ada ${newFiles.length} file baru yang belum dilacak git:`);
+      listFiles(newFiles, 30);
+      approvedNew = (await deps.confirm(`Ikutkan ${newFiles.length} file baru ini ke commit?`, false)) ? newFiles : [];
+    } else {
+      // -y hanya melewati konfirmasi; untuk file baru jawaban amannya selalu "tidak".
+      log.warn(
+        `${newFiles.length} file baru tidak ikut di-commit (${opts.yes ? '-y' : 'terminal non-interaktif'}). Pakai -a untuk mengikutkan.`,
+      );
+      listFiles(newFiles);
+    }
+  }
+
+  const plan = planCommit(wt, approvedNew);
+  if (!wantCommit) {
+    if (newFiles.length > 0) log.info(`${newFiles.length} file baru tidak ikut (tanpa -m tidak ada commit).`);
+    log.ok(hasTrackedChanges ? 'Tidak ada yang di-commit.' : 'Tidak ada perubahan file terlacak, tidak ada yang di-commit.');
+  } else if (plan.files.length === 0) {
+    log.warn('Tidak ada file yang di-commit — pesan -m diabaikan.');
   } else {
-    log.ok('Working tree bersih, tidak ada yang di-commit.');
+    commitMessage = ensureCommitPrefix(opts.message ?? '', ticketKey);
+    if (plan.mode === 'staged') log.info('Ada file yang sudah di-stage → hanya file tersebut yang di-commit.');
+    if (dry) {
+      log.info(`[dry-run] Akan commit ${plan.files.length} file: "${firstLine(commitMessage)}"`);
+      listFiles(plan.files);
+    } else {
+      if (plan.stageTracked) await git.stageTracked();
+      if (plan.addUntracked.length) await git.stagePaths(plan.addUntracked);
+      await git.commitStaged(commitMessage);
+      committed = true;
+      log.ok(`Commit ${plan.files.length} file: ${firstLine(commitMessage)}`);
+    }
+    const left = plan.left.filter((p) => !isEmbeddedRepo(p));
+    if (left.length && !dry) {
+      log.dim(`    ${left.length} file tidak ikut commit (tetap ada di folder Anda).`);
+    } else if (left.length && dry && plan.mode === 'staged') {
+      log.dim(`    ${left.length} file lain tidak ikut karena hanya file yang di-stage yang di-commit.`);
+    }
   }
 
   if (dry) {

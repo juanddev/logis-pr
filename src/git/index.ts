@@ -1,5 +1,8 @@
 import { CliError } from '../utils/errors.js';
-import { lines, runCommand, type ExecResult, type Runner } from '../utils/exec.js';
+import { runCommand, type ExecResult, type Runner } from '../utils/exec.js';
+import { parsePorcelainZ, type WorkingTreeStatus } from './plan.js';
+
+export * from './plan.js';
 
 export interface RemoteRepo {
   host: string;
@@ -65,14 +68,17 @@ export class Git {
     return res.stdout.trim() || null;
   }
 
-  async isDirty(): Promise<boolean> {
-    const out = await this.execOk(['status', '--porcelain', '--untracked-files=all'], 'git status');
-    return lines(out).length > 0;
+  /** Status working tree: file staged, berubah tapi belum di-stage, dan file baru (untracked). */
+  async status(): Promise<WorkingTreeStatus> {
+    // -z: dipisah NUL, nama file tidak di-quote — aman untuk spasi/karakter non-ASCII di semua OS.
+    const res = await this.exec(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+    if (res.code !== 0) throw new CliError(`git status gagal:\n${(res.stderr || res.stdout).trim()}`);
+    return parsePorcelainZ(res.stdout);
   }
 
-  async changedFiles(): Promise<string[]> {
-    const out = await this.execOk(['status', '--porcelain', '--untracked-files=all'], 'git status');
-    return lines(out);
+  async isDirty(): Promise<boolean> {
+    const st = await this.status();
+    return st.staged.length + st.unstaged.length + st.untracked.length > 0;
   }
 
   async remoteUrl(remote = 'origin'): Promise<string> {
@@ -85,9 +91,20 @@ export class Git {
     return res.stdout.trim();
   }
 
-  /** Stage semua perubahan lalu commit. Pesan dikirim lewat stdin (`-F -`), bukan argumen shell. */
-  async commitAll(message: string): Promise<void> {
-    await this.execOk(['add', '--all'], 'git add');
+  /** Stage perubahan file yang SUDAH dilacak git (modifikasi & hapus). File baru tidak ikut. */
+  async stageTracked(): Promise<void> {
+    await this.execOk(['add', '--update'], 'git add --update');
+  }
+
+  /** Stage file tertentu (dipakai untuk file baru yang disetujui). Dicicil agar aman dari batas panjang command line Windows. */
+  async stagePaths(paths: readonly string[]): Promise<void> {
+    for (let i = 0; i < paths.length; i += 50) {
+      await this.execOk(['add', '--', ...paths.slice(i, i + 50)], 'git add');
+    }
+  }
+
+  /** Commit isi staging area. Pesan dikirim lewat stdin (`--file=-`), bukan argumen shell. */
+  async commitStaged(message: string): Promise<void> {
     await this.execOk(['commit', '--file=-'], 'git commit', { input: `${message}\n` });
   }
 
