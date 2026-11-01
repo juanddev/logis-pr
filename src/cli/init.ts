@@ -48,7 +48,9 @@ export async function runInit(log: Logger): Promise<void> {
     'Status perantara menuju status review, urut sesuai workflow (dipisah koma)',
     cur.jiraTransitionPath,
   );
-  next.baseBranch = await ask('Base branch default untuk PR', cur.baseBranch, required('Base branch'));
+  next.productionBranch = await ask('Branch produksi (asal semua branch kerja)', cur.productionBranch, required('Branch produksi'));
+  next.baseBranch = await ask('Branch development (target PR fitur)', cur.baseBranch, required('Branch development'));
+  next.hotfixPrefixes = await ask('Prefix branch hotfix (dipisah koma)', cur.hotfixPrefixes, required('Prefix hotfix'));
   next.repoPrefix = await ask('Prefix nama repo (dibuang untuk nama Service)', cur.repoPrefix, required('Prefix'));
   next.prReviewers = await ask("Reviewer PR (username GitHub, dipisah koma; 'none' = tanpa reviewer)", cur.prReviewers, (v) =>
     v.trim() ? true : "Isi username, atau 'none' bila tidak perlu reviewer",

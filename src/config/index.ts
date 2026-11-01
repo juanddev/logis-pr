@@ -19,6 +19,10 @@ export interface Config {
   graphClientId: string;
   graphChatId: string;
   baseBranch: string;
+  /** Branch produksi: asal semua branch kerja & target PR hotfix. */
+  productionBranch: string;
+  /** Prefix branch hotfix (dipisah koma) — boleh di-PR ke production dan development. */
+  hotfixPrefixes: string;
   /** Username GitHub reviewer PR (dipisah koma). Kosong = tidak meminta review. */
   prReviewers: string;
   repoPrefix: string;
@@ -40,6 +44,8 @@ export const DEFAULT_CONFIG: Config = {
   graphClientId: '',
   graphChatId: '',
   baseBranch: 'development',
+  productionBranch: 'production',
+  hotfixPrefixes: 'hotfix/',
   prReviewers: 'firdausnp',
   repoPrefix: 'SELOG_LOGIS_',
 };
@@ -58,6 +64,8 @@ export const ENV_VARS: Record<ConfigKey, string> = {
   graphClientId: 'LOGIS_PR_GRAPH_CLIENT_ID',
   graphChatId: 'LOGIS_PR_GRAPH_CHAT_ID',
   baseBranch: 'LOGIS_PR_BASE_BRANCH',
+  productionBranch: 'LOGIS_PR_PRODUCTION_BRANCH',
+  hotfixPrefixes: 'LOGIS_PR_HOTFIX_PREFIXES',
   prReviewers: 'LOGIS_PR_REVIEWERS',
   repoPrefix: 'LOGIS_PR_REPO_PREFIX',
 };
@@ -107,6 +115,8 @@ function normalizeConfig(cfg: Config): Config {
     graphClientId: cfg.graphClientId.trim(),
     graphChatId: cfg.graphChatId.trim(),
     baseBranch: cfg.baseBranch.trim(),
+    productionBranch: cfg.productionBranch.trim(),
+    hotfixPrefixes: cfg.hotfixPrefixes.trim(),
     prReviewers: cfg.prReviewers.trim(),
     repoPrefix: cfg.repoPrefix.trim(),
     teamsMode,
@@ -189,7 +199,7 @@ export interface Requirements {
 
 /** Daftar field wajib yang masih kosong untuk kebutuhan run saat ini. */
 export function missingFields(cfg: Config, req: Requirements): ConfigKey[] {
-  const required: ConfigKey[] = ['baseBranch', 'repoPrefix', 'jiraProjectKey'];
+  const required: ConfigKey[] = ['baseBranch', 'productionBranch', 'repoPrefix', 'jiraProjectKey'];
   if (req.jira) required.push('jiraBaseUrl', 'jiraEmail', 'jiraApiToken', 'jiraReviewStatus');
   if (req.teams) {
     if (cfg.teamsMode === 'graph') required.push('graphTenantId', 'graphClientId', 'graphChatId');

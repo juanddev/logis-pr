@@ -10,6 +10,7 @@ export interface TeamsContext {
   ticket: string;
   desc: string;
   prUrl: string;
+  prUrls?: string[];
   ticketUrl: string;
 }
 

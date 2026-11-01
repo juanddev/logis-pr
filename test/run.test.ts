@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPr, type GitHubLike, type GitLike, type JiraLike, type RunDeps, type RunOptions } from '../src/cli/run.js';
 import { DEFAULT_CONFIG, type Config } from '../src/config/index.js';
-import type { WorkingTreeStatus } from '../src/git/index.js';
+import type { CommitInfo, WorkingTreeStatus } from '../src/git/index.js';
 import type { PullRequest } from '../src/github/index.js';
 import { JiraClient } from '../src/jira/index.js';
 import { fakeJiraWorkflow } from './helpers.js';
@@ -22,7 +22,22 @@ const config: Config = {
 
 /** Dunia palsu yang menyimpan state, sehingga run kedua melihat hasil run pertama. */
 function createWorld(
-  over: { branch?: string | null; dirty?: boolean; wt?: WorkingTreeStatus; status?: string; workflow?: Record<string, string[]> } = {},
+  over: {
+    branch?: string | null;
+    dirty?: boolean;
+    wt?: WorkingTreeStatus;
+    status?: string;
+    workflow?: Record<string, string[]>;
+    /** Commit HEAD di luar production. */
+    branchCommits?: CommitInfo[];
+    /** Commit yang hanya ada di development. */
+    devOnly?: CommitInfo[];
+    /** Commit production yang belum ada di development. */
+    unsynced?: CommitInfo[];
+    /** base → file konflik. */
+    conflicts?: Record<string, string[]>;
+    remoteBranches?: string[];
+  } = {},
 ) {
   const clean: WorkingTreeStatus = { staged: [], unstaged: [], untracked: [] };
   const state = {
@@ -37,6 +52,7 @@ function createWorld(
     stdout: [] as string[],
     notified: new Map<string, string>(),
     reviewers: [] as string[],
+    reviewersByPr: new Map<number, string[]>(),
   };
   const git: GitLike = {
     version: async () => 'git version 2.47.0.windows.1',
@@ -61,19 +77,36 @@ function createWorld(
       state.pushes++;
     }),
     lastCommitSubject: async () => state.commits.at(-1)?.split('\n')[0] ?? 'LOGIS-3938: commit lama',
+    fetch: vi.fn(async () => undefined),
+    refExists: async (ref: string) => (over.remoteBranches ?? ['production', 'development']).map((b) => `origin/${b}`).includes(ref),
+    commitsBetween: async (include: string, exclude: readonly string[]) => {
+      if (include === 'HEAD') return over.branchCommits ?? [{ sha: 'f1', line: 'f1 fitur' }];
+      if (include === 'origin/development' && exclude[0] === 'origin/production') return over.devOnly ?? [{ sha: 'd1', line: 'd1 dev' }];
+      if (include === 'origin/production') return over.unsynced ?? [];
+      return [];
+    },
+    snapshotCommit: vi.fn(async () => 'snap'),
+    mergeCheck: vi.fn(async (base: string) => {
+      const files = over.conflicts?.[base.replace(/^origin\//, '')] ?? [];
+      return { clean: files.length === 0, conflicts: files };
+    }),
   };
 
   const gh: GitHubLike = {
     version: async () => 'gh version 2.80.0',
     authStatus: async () => ({ ok: true, detail: 'Logged in' }),
-    findOpenPr: async () => state.prs[0] ?? null,
+    findOpenPr: vi.fn(async (_repo: string, _branch: string, base?: string) => state.prs.find((p) => !base || p.baseRefName === base) ?? null),
     createPr: vi.fn(async (input) => {
-      state.prs.push({ number: 1886, url: PR_URL, title: input.title, isDraft: Boolean(input.draft), baseRefName: input.base });
-      return PR_URL;
+      const number = input.base === 'production' ? 1890 : 1886;
+      const url = number === 1886 ? PR_URL : PR_URL.replace('1886', String(number));
+      state.prs.push({ number, url, title: input.title, isDraft: Boolean(input.draft), baseRefName: input.base });
+      return url;
     }),
-    ensureReviewers: vi.fn(async (_repo: string, _n: number, reviewers: readonly string[]) => {
-      const toAdd = reviewers.filter((r) => !state.reviewers.includes(r));
-      state.reviewers.push(...toAdd);
+    ensureReviewers: vi.fn(async (_repo: string, n: number, reviewers: readonly string[]) => {
+      const cur = state.reviewersByPr.get(n) ?? [];
+      const toAdd = reviewers.filter((r) => !cur.includes(r));
+      state.reviewersByPr.set(n, [...cur, ...toAdd]);
+      if (!state.reviewers.length || n === 1886) state.reviewers = [...new Set([...state.reviewers, ...toAdd])];
       return { requested: toAdd, alreadyRequested: reviewers.filter((r) => !toAdd.includes(r)), alreadyReviewed: [], skippedAuthor: [] };
     }),
   };
@@ -96,6 +129,7 @@ function createWorld(
       state.teams.push(p);
     },
     confirm: async (_q, defaultYes) => defaultYes, // = pengguna menekan Enter
+    choose: async (_q, _choices, defaultValue) => defaultValue,
     notified: {
       sentAt: async (url) => state.notified.get(url) ?? null,
       markSent: async (url) => {
@@ -183,10 +217,139 @@ describe('runPr — alur lengkap', () => {
   });
 
   it('opsi -b, -d, -t diteruskan', async () => {
-    const w = createWorld({ branch: 'feature/no-key' });
+    const w = createWorld({ branch: 'feature/no-key', remoteBranches: ['production', 'development', 'staging'] });
     const res = await runPr({ ...baseOpts, base: 'staging', draft: true, ticket: '4001' }, w.deps());
     expect(res.ticketKey).toBe('LOGIS-4001');
     expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ base: 'staging', draft: true }));
+  });
+});
+
+describe('runPr — alur branch production / development', () => {
+  const opts = { ...baseOpts, yes: true };
+  const noSideEffects = (w: ReturnType<typeof createWorld>) => {
+    expect(w.git.commitStaged).not.toHaveBeenCalled();
+    expect(w.git.push).not.toHaveBeenCalled();
+    expect(w.gh.createPr).not.toHaveBeenCalled();
+    expect(w.jstate.posts).toBe(0);
+    expect(w.state.teams).toHaveLength(0);
+  };
+
+  it('fitur: fetch production & development, cek konflik ke development, PR ke development', async () => {
+    const w = createWorld();
+    const res = await runPr(opts, w.deps());
+    expect(w.git.fetch).toHaveBeenCalledWith(['production', 'development']);
+    expect(w.git.mergeCheck).toHaveBeenCalledWith('origin/development', 'snap');
+    expect(res.bases).toEqual(['development']);
+    expect(w.log.lines.some((l) => l.includes("Branch berasal dari 'production'"))).toBe(true);
+  });
+
+  it('branch membawa commit development → berhenti dengan warning besar, tanpa efek samping', async () => {
+    const w = createWorld({
+      branchCommits: [{ sha: 'f1', line: 'f1 fitur' }, { sha: 'd1', line: 'd1 fitur orang lain di dev' }],
+      devOnly: [{ sha: 'd1', line: 'd1 fitur orang lain di dev' }],
+    });
+    await expect(runPr(opts, w.deps())).rejects.toThrow(/harus dibuat dari production/);
+    const fails = w.log.lines.filter((l) => l.startsWith('fail:')).join('\n');
+    expect(fails).toMatch(/BRANCH TIDAK DIBUAT DARI 'production'/);
+    expect(fails).toMatch(/d1 fitur orang lain di dev/);
+    noSideEffects(w);
+  });
+
+  it('konflik ke development → berhenti SEBELUM commit/push/PR, exit code 2', async () => {
+    const w = createWorld({ conflicts: { development: ['src/app.ts', 'README.md'] } });
+    const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
+    expect((err as CliError).message).toMatch(/konflik/);
+    expect((err as CliError).exitCode).toBe(2);
+    const fails = w.log.lines.filter((l) => l.startsWith('fail:')).join('\n');
+    expect(fails).toMatch(/KONFLIK — PROSES DIHENTIKAN/);
+    expect(fails).toMatch(/src\/app\.ts/);
+    noSideEffects(w);
+  });
+
+  it('dry-run juga mendeteksi konflik', async () => {
+    const w = createWorld({ conflicts: { development: ['a.ts'] } });
+    await expect(runPr({ ...baseOpts, dryRun: true }, w.deps())).rejects.toThrow(/konflik/);
+  });
+
+  it('cek konflik memakai perubahan yang akan di-commit (snapshot), bukan HEAD lama', async () => {
+    const w = createWorld();
+    await runPr(opts, w.deps());
+    expect(w.git.snapshotCommit).toHaveBeenCalledWith(expect.objectContaining({ files: ['src/a.ts'] }));
+  });
+
+  it('production punya commit yang belum ada di development → warning', async () => {
+    const w = createWorld({ unsynced: [{ sha: 'h1', line: 'h1 hotfix lama' }] });
+    await runPr(opts, w.deps());
+    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('belum ada di \'development\''))).toBe(true);
+  });
+
+  it('origin/production tidak ada → berhenti dengan saran', async () => {
+    const w = createWorld({ remoteBranches: ['development'] });
+    const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
+    expect((err as CliError).message).toMatch(/'production' tidak ada di remote/);
+    expect((err as CliError).hint).toMatch(/LOGIS_PR_PRODUCTION_BRANCH/);
+  });
+
+  it('hotfix: default 2 PR (production & development), satu transisi Jira, satu pesan Teams berisi 2 link', async () => {
+    const w = createWorld({ branch: 'hotfix/LOGIS-3938-null-driver' });
+    const res = await runPr(opts, w.deps());
+    expect(res.bases).toEqual(['production', 'development']);
+    expect(res.prs.map((p) => p.base)).toEqual(['production', 'development']);
+    expect(w.git.mergeCheck).toHaveBeenCalledTimes(2);
+    expect(w.jstate.posts).toBe(1);
+    expect(w.state.teams).toHaveLength(1);
+    expect(w.state.teams[0]?.text).toBe(
+      [
+        'Task: Review PR LOGIS-3938',
+        `Desc: ${SUMMARY} in [ServiceOrder]`,
+        '',
+        `PR (production): ${PR_URL.replace('1886', '1890')}`,
+        `PR (development): ${PR_URL}`,
+        'Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3938',
+      ].join('\n'),
+    );
+    expect(w.state.reviewersByPr.get(1890)).toEqual(['firdausnp']);
+    expect(w.state.reviewersByPr.get(1886)).toEqual(['firdausnp']);
+    expect(w.state.stdout).toHaveLength(2);
+  });
+
+  it('hotfix interaktif: pilihan "production saja"', async () => {
+    const w = createWorld({ branch: 'hotfix/LOGIS-3938-x' });
+    const choose = vi.fn(async () => 'production' as never);
+    const res = await runPr(baseOpts, w.deps({ choose }));
+    expect(choose).toHaveBeenCalledWith(
+      expect.stringContaining('hotfix'),
+      [
+        { name: 'production dan development', value: 'both' },
+        { name: 'production saja', value: 'production' },
+        { name: 'development saja', value: 'development' },
+      ],
+      'both',
+    );
+    expect(res.bases).toEqual(['production']);
+    expect(w.git.mergeCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('hotfix konflik hanya ke development → berhenti, saran PR ke production saja', async () => {
+    const w = createWorld({ branch: 'hotfix/LOGIS-3938-x', conflicts: { development: ['src/x.ts'] } });
+    const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
+    expect((err as CliError).hint).toMatch(/production saja/);
+    noSideEffects(w);
+  });
+
+  it('hotfix dijalankan ulang → kedua PR dipakai ulang, Teams tidak dobel', async () => {
+    const w = createWorld({ branch: 'hotfix/LOGIS-3938-x' });
+    await runPr(opts, w.deps());
+    const again = await runPr(opts, w.deps());
+    expect(w.gh.createPr).toHaveBeenCalledTimes(2);
+    expect(again.prCreated).toBe(false);
+    expect(again.teams).toBe('already-sent');
+  });
+
+  it('-b production,development memaksa dua target untuk branch apa pun', async () => {
+    const w = createWorld();
+    const res = await runPr({ ...opts, base: 'production,development' }, w.deps());
+    expect(res.bases).toEqual(['production', 'development']);
   });
 });
 
@@ -394,7 +557,8 @@ describe('runPr — langkah non-kritis gagal', () => {
 describe('runPr — validasi awal (gagal kritis, tidak ada efek samping)', () => {
   const cases: Array<[string, (w: ReturnType<typeof createWorld>) => void, RegExp]> = [
     ['detached HEAD', (w) => (w.state.branch = null), /detached/],
-    ['di base branch', (w) => (w.state.branch = 'development'), /base branch 'development'/],
+    ['di branch development', (w) => (w.state.branch = 'development'), /branch utama/],
+    ['di branch production', (w) => (w.state.branch = 'production'), /branch utama/],
     ['key tiket tidak ada', (w) => (w.state.branch = 'feature/tanpa-key'), /tidak ditemukan di nama branch/],
     ['gh belum login', (w) => (w.gh.authStatus = async () => ({ ok: false, detail: '' })), /belum login/],
     ['bukan repo git', (w) => (w.git.isRepo = async () => false), /bukan repository git/],

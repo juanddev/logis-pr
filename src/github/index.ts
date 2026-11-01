@@ -71,7 +71,7 @@ export class GitHub {
   }
 
   /** PR open untuk branch ini (milik owner repo yang sama), bila ada. */
-  async findOpenPr(repo: string, branch: string): Promise<PullRequest | null> {
+  async findOpenPr(repo: string, branch: string, base?: string): Promise<PullRequest | null> {
     const owner = repo.split('/')[0]?.toLowerCase();
     const res = await this.exec([
       'pr',
@@ -80,6 +80,7 @@ export class GitHub {
       repo,
       '--head',
       branch,
+      ...(base ? ['--base', base] : []),
       '--state',
       'open',
       '--limit',
@@ -101,6 +102,7 @@ export class GitHub {
     const match = items.find(
       (pr) =>
         (pr.headRefName === undefined || pr.headRefName === branch) &&
+        (!base || pr.baseRefName === undefined || pr.baseRefName === base) &&
         (!pr.headRepositoryOwner?.login || pr.headRepositoryOwner.login.toLowerCase() === owner),
     );
     if (!match) return null;

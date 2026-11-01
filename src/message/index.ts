@@ -96,7 +96,10 @@ export function safeHref(url: string): string {
 export interface TeamsMessageInput {
   ticketKey: string;
   desc: string;
+  /** Satu PR: format standar `PR: <url>`. */
   prUrl: string;
+  /** Lebih dari satu PR (hotfix ke production & development): `PR (<base>): <url>` per baris. */
+  prs?: ReadonlyArray<{ base: string; url: string }>;
   ticketUrl: string;
 }
 
@@ -108,11 +111,13 @@ export interface TeamsMessage {
 }
 
 export function buildTeamsMessage(input: TeamsMessageInput): TeamsMessage {
+  const prs = input.prs && input.prs.length > 1 ? input.prs : [{ base: '', url: input.prUrl }];
+  const label = (base: string) => (base ? `PR (${base})` : 'PR');
   const text = [
     `Task: Review PR ${input.ticketKey}`,
     `Desc: ${input.desc}`,
     '',
-    `PR: ${input.prUrl}`,
+    ...prs.map((p) => `${label(p.base)}: ${p.url}`),
     `Tiket: ${input.ticketUrl}`,
   ].join('\n');
 
@@ -121,7 +126,7 @@ export function buildTeamsMessage(input: TeamsMessageInput): TeamsMessage {
     `Task: Review PR ${escapeHtml(input.ticketKey)}`,
     `Desc: ${escapeHtml(input.desc)}`,
     '',
-    `PR: ${link(input.prUrl)}`,
+    ...prs.map((p) => `${escapeHtml(label(p.base))}: ${link(p.url)}`),
     `Tiket: ${link(input.ticketUrl)}`,
   ].join('<br>');
 

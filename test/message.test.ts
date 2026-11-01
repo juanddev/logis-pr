@@ -162,6 +162,24 @@ describe('buildTeamsMessage', () => {
     expect(msg.html).toContain('<a href="https://github.com/o/r/pull/1?a=1&amp;b=&quot;2&quot;">');
   });
 
+  it('2 PR (hotfix): baris "PR (<base>)" untuk masing-masing, satu PR tetap format standar', () => {
+    const prs = [
+      { base: 'production', url: 'https://github.com/o/r/pull/1' },
+      { base: 'development', url: 'https://github.com/o/r/pull/2' },
+    ];
+    const msg = buildTeamsMessage({ ...input, prs });
+    expect(msg.text.split('\n')).toEqual([
+      'Task: Review PR LOGIS-3938',
+      `Desc: ${input.desc}`,
+      '',
+      'PR (production): https://github.com/o/r/pull/1',
+      'PR (development): https://github.com/o/r/pull/2',
+      `Tiket: ${input.ticketUrl}`,
+    ]);
+    expect(msg.html).toContain('PR (production): <a href="https://github.com/o/r/pull/1">');
+    expect(buildTeamsMessage({ ...input, prs: [prs[1]!] }).text).toBe(buildTeamsMessage(input).text);
+  });
+
   it('menolak href non-http(s)', () => {
     expect(() => safeHref('javascript:alert(1)')).toThrow(/tidak diizinkan/);
     expect(() => buildTeamsMessage({ ...input, prUrl: 'javascript:alert(1)' })).toThrow();

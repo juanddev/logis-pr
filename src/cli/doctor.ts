@@ -141,6 +141,13 @@ export async function runDoctor(log: Logger, opts: { testTeams?: boolean } = {})
       const key = extractTicketKey(branch, cfg.jiraProjectKey);
       return key ? ['ok', `${branch} → ${key}`] : ['warn', `${branch} (key tiket tidak ditemukan)`, 'Pakai -t LOGIS-1234'];
     });
+    await check(`Branch '${cfg.productionBranch}' & '${cfg.baseBranch}' di origin`, async () => {
+      const missing: string[] = [];
+      for (const b of [cfg.productionBranch, cfg.baseBranch]) if (!(await git.refExists(`origin/${b}`))) missing.push(b);
+      return missing.length
+        ? ['fail', `tidak ditemukan: ${missing.join(', ')}`, 'Jalankan git fetch, atau set productionBranch/baseBranch yang benar untuk repo ini.']
+        : ['ok', 'ada'];
+    });
     await check('Remote origin', async () => {
       const r = parseRemoteUrl(await git.remoteUrl());
       if (!r) return ['fail', 'bukan URL GitHub'];

@@ -14,7 +14,7 @@ import { VERSION } from '../version.js';
 import { runDoctor } from './doctor.js';
 import { runGraphChats, runGraphLogin } from './graph.js';
 import { runInit } from './init.js';
-import { confirmPrompt, isInteractive, isPromptAbort } from './prompt.js';
+import { choosePrompt, confirmPrompt, isInteractive, isPromptAbort } from './prompt.js';
 import { runPr, type RunOptions } from './run.js';
 
 const symbols = getSymbols();
@@ -28,6 +28,7 @@ Contoh:
   logis-pr -a -m "tambah modul baru"                  ikutkan file baru (untracked) tanpa ditanya
   logis-pr -m "wip" -d --no-teams                     PR draft, tanpa pesan Teams
   logis-pr -t LOGIS-3938 -b staging -y                override tiket & base, kirim tanpa konfirmasi
+  logis-pr -m "fix null driver"   (di hotfix/...)     PR ke production & development (bisa dipilih)
   logis-pr --dry-run -m "coba"                        lihat rencana tanpa mengubah apa pun
   logis-pr init                                       buat/ubah ~/.logis-pr.json
   logis-pr doctor                                     cek git, gh, config, Jira, Teams
@@ -67,6 +68,7 @@ async function commandRun(opts: CliOptions): Promise<void> {
         })
       : null,
     confirm: confirmPrompt,
+    choose: choosePrompt,
     notified: createNotifiedStore(),
     copy: (text) => copyToClipboard(text),
     log,
@@ -86,7 +88,7 @@ function buildProgram(): Command {
     .helpCommand(false)
     .option('-m, --message <pesan>', 'pesan commit (prefix LOGIS-XXXX: ditambahkan bila key tiket belum ada)')
     .option('-t, --ticket <key>', 'override key tiket dari nama branch (mis. LOGIS-3938)')
-    .option('-b, --base <branch>', 'base branch PR (default dari config: baseBranch)')
+    .option('-b, --base <branches>', 'target PR, dipisah koma (default: development; hotfix: ditanya)')
     .option('-a, --all', 'ikutkan file baru (untracked) ke commit tanpa ditanya')
     .option('-r, --reviewers <users>', "reviewer PR, dipisah koma (override config prReviewers; 'none' = tanpa reviewer)")
     .option('-d, --draft', 'buat PR sebagai draft')

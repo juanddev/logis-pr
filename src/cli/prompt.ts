@@ -1,4 +1,4 @@
-import { confirm } from '@inquirer/prompts';
+import { confirm, select } from '@inquirer/prompts';
 
 /** Prompt ditulis ke stderr agar stdout tetap bersih (link PR). Jalan di PowerShell, cmd, dan Terminal macOS. */
 export const promptContext = { input: process.stdin, output: process.stderr } as const;
@@ -20,4 +20,13 @@ export async function confirmPrompt(question: string, defaultYes = true): Promis
     if (isPromptAbort(err)) return false;
     throw err;
   }
+}
+
+/** Pilihan tunggal (panah atas/bawah + Enter). Ctrl+C → error abort (ditangani di main). */
+export async function choosePrompt<T extends string>(
+  question: string,
+  choices: ReadonlyArray<{ name: string; value: T }>,
+  defaultValue: T,
+): Promise<T> {
+  return select<T>({ message: question, choices: [...choices], default: defaultValue }, promptContext);
 }

@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { Git, isEmbeddedRepo, looksSensitive, parseRemoteUrl, planCommit } from '../src/git/index.js';
+import {
+  basesForChoice,
+  Git,
+  isEmbeddedRepo,
+  isHotfixBranch,
+  leakedDevCommits,
+  looksSensitive,
+  parseMergeTree,
+  parseRemoteUrl,
+  planCommit,
+} from '../src/git/index.js';
 import { GitHub, prNumberFromUrl } from '../src/github/index.js';
 import { lines, normalizeEol } from '../src/utils/exec.js';
 import { fakeRunner } from './helpers.js';
@@ -271,5 +281,73 @@ describe('GitHub reviewers (gh api di-mock)', () => {
   it('prNumberFromUrl', () => {
     expect(prNumberFromUrl(`https://github.com/${repo}/pull/808`)).toBe(808);
     expect(prNumberFromUrl('https://github.com/o/r/pull/<baru>')).toBeNull();
+  });
+});
+
+describe('alur branch (flow.ts)', () => {
+  it('isHotfixBranch', () => {
+    expect(isHotfixBranch('hotfix/LOGIS-1-x', ['hotfix/'])).toBe(true);
+    expect(isHotfixBranch('Hotfix/LOGIS-1-x', ['hotfix/'])).toBe(true);
+    expect(isHotfixBranch('feature/hotfix-x', ['hotfix/'])).toBe(false);
+    expect(isHotfixBranch('fix/LOGIS-1', ['hotfix/', 'fix/'])).toBe(true);
+  });
+  it('leakedDevCommits = irisan commit branch & commit khusus development', () => {
+    const c = (sha: string) => ({ sha, line: sha });
+    expect(leakedDevCommits([c('a'), c('b')], [c('b'), c('z')]).map((x) => x.sha)).toEqual(['b']);
+    expect(leakedDevCommits([c('a')], [])).toEqual([]);
+  });
+  it('parseMergeTree: bersih, konflik, error', () => {
+    const tree = 'a'.repeat(40);
+    expect(parseMergeTree(0, `${tree}\n`)).toEqual({ clean: true, conflicts: [] });
+    expect(parseMergeTree(1, `${tree}\nf.txt\nsrc/a b.ts\nf.txt\n\nCONFLICT ...\n`)).toEqual({
+      clean: false,
+      conflicts: ['f.txt', 'src/a b.ts'],
+    });
+    expect(parseMergeTree(1, 'merge-tree: nope - not something we can merge\n')).toBeNull();
+    expect(parseMergeTree(128, '')).toBeNull();
+  });
+  it('basesForChoice: production selalu didahulukan', () => {
+    expect(basesForChoice('both', 'production', 'development')).toEqual(['production', 'development']);
+    expect(basesForChoice('production', 'production', 'development')).toEqual(['production']);
+    expect(basesForChoice('development', 'production', 'development')).toEqual(['development']);
+  });
+});
+
+describe('Git: fetch, snapshot & mergeCheck (git di-mock)', () => {
+  it('mergeCheck memanggil merge-tree --write-tree dan memparse konflik', async () => {
+    const { runner, calls } = fakeRunner(() => ({ code: 1, stdout: `${'b'.repeat(40)}\nREADME.md\n` }));
+    const r = await new Git(runner).mergeCheck('origin/development', 'abc');
+    expect(r).toEqual({ clean: false, conflicts: ['README.md'] });
+    expect(calls[0]?.args.slice(-6)).toEqual(['merge-tree', '--write-tree', '--name-only', '--no-messages', 'origin/development', 'abc']);
+  });
+  it('mergeCheck: git lama → error dengan saran update', async () => {
+    const { runner } = fakeRunner(() => ({ code: 129, stderr: 'usage: git merge-tree <base-tree> <branch1> <branch2>' }));
+    const err = await new Git(runner).mergeCheck('origin/development', 'abc').catch((e: unknown) => e);
+    expect((err as { hint?: string }).hint).toMatch(/2\.38/);
+  });
+  it('snapshotCommit (mode tracked) memakai index sementara, bukan index asli', async () => {
+    const { runner, calls } = fakeRunner((_c, args) => {
+      if (args.includes('rev-parse')) return { stdout: 'HEADSHA\n' };
+      if (args.includes('write-tree')) return { stdout: 'TREESHA\n' };
+      if (args.includes('commit-tree')) return { stdout: 'SNAPSHA\n' };
+      return {};
+    });
+    const sha = await new Git(runner).snapshotCommit({ mode: 'tracked', stageTracked: true, addUntracked: ['n.ts'], files: ['a.ts', 'n.ts'], left: [] });
+    expect(sha).toBe('SNAPSHA');
+    for (const c of calls.filter((c) => c.args.some((a) => ['read-tree', 'add', 'write-tree'].includes(a)))) {
+      expect(c.options?.env?.GIT_INDEX_FILE).toMatch(/logis-pr-index-/);
+    }
+    expect(calls.find((c) => c.args.includes('commit-tree'))?.args.slice(-5)).toEqual(['TREESHA', '-p', 'HEADSHA', '-m', 'logis-pr conflict check']);
+  });
+  it('snapshotCommit tanpa file → HEAD apa adanya', async () => {
+    const { runner, calls } = fakeRunner(() => ({ stdout: 'HEADSHA\n' }));
+    expect(await new Git(runner).snapshotCommit({ mode: 'tracked', stageTracked: false, addUntracked: [], files: [], left: [] })).toBe('HEADSHA');
+    expect(calls).toHaveLength(1);
+  });
+  it('fetch hanya memperbarui remote-tracking, meneruskan stdin untuk kredensial', async () => {
+    const { runner, calls } = fakeRunner(() => ({}));
+    await new Git(runner).fetch(['production', 'development']);
+    expect(calls[0]?.args.slice(-6)).toEqual(['fetch', '--quiet', '--no-tags', 'origin', 'production', 'development']);
+    expect(calls[0]?.options?.inheritStdin).toBe(true);
   });
 });

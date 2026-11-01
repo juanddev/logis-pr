@@ -9,6 +9,8 @@ export interface TeamsPayload {
   ticket: string;
   desc: string;
   prUrl: string;
+  /** Semua link PR (hotfix bisa 2: production & development). */
+  prUrls?: string[];
   ticketUrl: string;
   source: 'logis-pr';
 }
