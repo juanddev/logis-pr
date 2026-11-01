@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { describeTransitions, isSameStatus, JiraClient, pickTransition, type JiraTransition } from '../src/jira/index.js';
+import {
+  buildStatusPath,
+  chooseNextTransition,
+  describeTransitions,
+  isSameStatus,
+  JiraClient,
+  pickTransition,
+  type JiraTransition,
+} from '../src/jira/index.js';
 import { CliError } from '../src/utils/errors.js';
-import { fakeFetch } from './helpers.js';
+import { fakeFetch, fakeJiraWorkflow } from './helpers.js';
 
 const transitions: JiraTransition[] = [
   { id: '11', name: 'Start Progress', to: { name: 'In Progress' } },
@@ -92,16 +100,13 @@ describe('JiraClient (HTTP di-mock)', () => {
     expect(requests).toHaveLength(0);
   });
 
-  it('moveToStatus: GET transitions → POST id yang cocok', async () => {
-    const { fetchImpl, requests } = fakeFetch([
-      { match: (u) => u.endsWith('/issue/LOGIS-1/transitions'), body: { transitions } },
-      { method: 'POST', match: (u) => u.endsWith('/issue/LOGIS-1/transitions'), status: 204 },
-    ]);
+  it('moveToStatus: GET transitions → POST id yang cocok → baca ulang status', async () => {
+    const { fetchImpl, requests, state } = fakeJiraWorkflow('In Progress');
     const out = await new JiraClient(creds, fetchImpl).moveToStatus('LOGIS-1', 'Code Review', { currentStatus: 'In Progress' });
     expect(out.kind).toBe('moved');
+    expect(state.history).toEqual(['In Progress → Code Review']);
     const post = requests.find((r) => r.method === 'POST');
-    expect(JSON.parse(post?.body ?? '{}')).toEqual({ transition: { id: '21' } });
-    expect(post?.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(post?.body ?? '{}')).toEqual({ transition: { id: '100' } });
   });
 
   it('moveToStatus: dry-run tidak POST', async () => {
@@ -119,7 +124,7 @@ describe('JiraClient (HTTP di-mock)', () => {
       { match: (u) => u.endsWith('/transitions'), body: { transitions: [{ id: '31', name: 'Done', to: { name: 'Done' } }] } },
     ]);
     const out = await new JiraClient(creds, fetchImpl).moveToStatus('LOGIS-1', 'Code Review', { currentStatus: 'To Do' });
-    expect(out).toEqual({ kind: 'unavailable', available: ['Done'] });
+    expect(out).toEqual({ kind: 'unavailable', status: 'To Do', available: ['Done'], steps: [] });
   });
 
   it('moveToStatus: tanpa currentStatus membaca issue dulu', async () => {
@@ -129,5 +134,85 @@ describe('JiraClient (HTTP di-mock)', () => {
     const out = await new JiraClient(creds, fetchImpl).moveToStatus('LOGIS-1', 'Code Review');
     expect(out.kind).toBe('already');
     expect(requests).toHaveLength(1);
+  });
+});
+
+describe('transisi bertahap (workflow LOGIS)', () => {
+  const VIA = ['Ready For Development', 'In Progress'];
+  const move = (initial: string, extra: { failPostTo?: string; dryRun?: boolean; via?: string[] } = {}) => {
+    const fake = fakeJiraWorkflow(initial, { failPostTo: extra.failPostTo });
+    const client = new JiraClient(creds, fake.fetchImpl);
+    return { fake, run: () => client.moveToStatus('LOGIS-1', 'Code Review', { via: extra.via ?? VIA, dryRun: extra.dryRun }) };
+  };
+
+  it('buildStatusPath: target selalu terakhir, tanpa duplikat', () => {
+    expect(buildStatusPath([' Ready For Development ', 'in progress', 'In Progress', '', 'code review'], 'Code Review')).toEqual([
+      'Ready For Development',
+      'in progress',
+      'Code Review',
+    ]);
+  });
+
+  it('chooseNextTransition: pilih status terjauh yang tersedia, tidak pernah mundur', () => {
+    const path = ['Ready For Development', 'In Progress', 'Code Review'];
+    const t = (to: string): JiraTransition => ({ id: to, name: `Go ${to}`, to: { name: to } });
+    expect(chooseNextTransition([t('Ready For Development'), t('In Progress')], path, 'To Do')?.to).toBe('In Progress');
+    expect(chooseNextTransition([t('Ready For Development')], path, 'In Progress')).toBeUndefined();
+    expect(chooseNextTransition([t('Done'), t('Invalid')], path, 'To Do')).toBeUndefined();
+  });
+
+  it.each([
+    ['To Do', ['To Do → In Progress', 'In Progress → Code Review']],
+    ['Need Bussiness Requirement', ['Need Bussiness Requirement → Ready For Development', 'Ready For Development → In Progress', 'In Progress → Code Review']],
+    ['Ready For Development', ['Ready For Development → In Progress', 'In Progress → Code Review']],
+    ['Hold', ['Hold → Ready For Development', 'Ready For Development → In Progress', 'In Progress → Code Review']],
+    ['In Progress', ['In Progress → Code Review']],
+    ['In Fixing', ['In Fixing → Code Review']],
+  ])('dari %s sampai Code Review', async (initial, history) => {
+    const { fake, run } = move(initial);
+    const out = await run();
+    expect(out.kind).toBe('moved');
+    expect(fake.state.history).toEqual(history);
+    expect(fake.state.status).toBe('Code Review');
+  });
+
+  it('sudah di Code Review → tidak ada POST', async () => {
+    const { fake, run } = move('Code Review');
+    expect((await run()).kind).toBe('already');
+    expect(fake.state.posts).toBe(0);
+  });
+
+  it('Defect Bugs (tidak ada jalur) → berhenti dengan daftar transisi, tidak ke Done/Invalid', async () => {
+    const { fake, run } = move('Defect Bugs');
+    const out = await run();
+    expect(out.kind).toBe('unavailable');
+    if (out.kind === 'unavailable') expect(out.available).toContain('Go In Fixing → In Fixing');
+    expect(fake.state.posts).toBe(0);
+  });
+
+  it('Defect Bugs + In Fixing di jalur → Defect Bugs → In Fixing → Code Review', async () => {
+    const { fake, run } = move('Defect Bugs', { via: [...VIA, 'In Fixing'] });
+    expect((await run()).kind).toBe('moved');
+    expect(fake.state.history).toEqual(['Defect Bugs → In Fixing', 'In Fixing → Code Review']);
+  });
+
+  it('In Testing (tidak ada transisi maju) → unavailable', async () => {
+    const { fake, run } = move('In Testing');
+    expect((await run()).kind).toBe('unavailable');
+    expect(fake.state.posts).toBe(0);
+  });
+
+  it('dry-run: hanya langkah pertama direncanakan, tanpa POST', async () => {
+    const { fake, run } = move('To Do', { dryRun: true });
+    const out = await run();
+    expect(out).toMatchObject({ kind: 'planned', next: ['Code Review'] });
+    if (out.kind === 'planned') expect(out.steps[0]).toMatchObject({ from: 'To Do', to: 'In Progress' });
+    expect(fake.state.posts).toBe(0);
+  });
+
+  it('langkah tengah gagal (field wajib) → error dilempar setelah langkah pertama', async () => {
+    const { fake, run } = move('To Do', { failPostTo: 'Code Review' });
+    await expect(run()).rejects.toThrow(/HTTP 400.*berhenti di status 'In Progress'/s);
+    expect(fake.state.status).toBe('In Progress');
   });
 });

@@ -3,7 +3,8 @@ import { runPr, type GitHubLike, type GitLike, type JiraLike, type RunDeps, type
 import { DEFAULT_CONFIG, type Config } from '../src/config/index.js';
 import type { WorkingTreeStatus } from '../src/git/index.js';
 import type { PullRequest } from '../src/github/index.js';
-import { pickTransition, type JiraTransition, type TransitionOutcome } from '../src/jira/index.js';
+import { JiraClient } from '../src/jira/index.js';
+import { fakeJiraWorkflow } from './helpers.js';
 import type { TeamsPayload } from '../src/teams/index.js';
 import { CliError } from '../src/utils/errors.js';
 import { ASCII_SYMBOLS, createMemoryLogger } from '../src/utils/term.js';
@@ -21,7 +22,7 @@ const config: Config = {
 
 /** Dunia palsu yang menyimpan state, sehingga run kedua melihat hasil run pertama. */
 function createWorld(
-  over: { branch?: string | null; dirty?: boolean; wt?: WorkingTreeStatus; status?: string; transitions?: JiraTransition[] } = {},
+  over: { branch?: string | null; dirty?: boolean; wt?: WorkingTreeStatus; status?: string; workflow?: Record<string, string[]> } = {},
 ) {
   const clean: WorkingTreeStatus = { staged: [], unstaged: [], untracked: [] };
   const state = {
@@ -31,18 +32,12 @@ function createWorld(
     commits: [] as string[],
     pushes: 0,
     prs: [] as PullRequest[],
-    status: over.status ?? 'In Progress',
-    posts: 0,
     teams: [] as TeamsPayload[],
     copied: [] as string[],
     stdout: [] as string[],
     notified: new Map<string, string>(),
+    reviewers: [] as string[],
   };
-  const transitions = over.transitions ?? [
-    { id: '11', name: 'Start', to: { name: 'In Progress' } },
-    { id: '21', name: 'Ready for review', to: { name: 'Code Review' } },
-  ];
-
   const git: GitLike = {
     version: async () => 'git version 2.47.0.windows.1',
     isRepo: async () => true,
@@ -76,21 +71,20 @@ function createWorld(
       state.prs.push({ number: 1886, url: PR_URL, title: input.title, isDraft: Boolean(input.draft), baseRefName: input.base });
       return PR_URL;
     }),
-  };
-
-  const jira: JiraLike = {
-    getIssue: async (key) => ({ key, summary: SUMMARY, status: state.status }),
-    moveToStatus: vi.fn(async (_key: string, target: string, opts?: { currentStatus?: string; dryRun?: boolean }) => {
-      const current = opts?.currentStatus ?? state.status;
-      if (current.toLowerCase() === target.toLowerCase()) return { kind: 'already', status: current } as TransitionOutcome;
-      const t = pickTransition(transitions, target);
-      if (!t) return { kind: 'unavailable', available: transitions.map((x) => x.name) } as TransitionOutcome;
-      if (opts?.dryRun) return { kind: 'planned', transition: t } as TransitionOutcome;
-      state.posts++;
-      state.status = t.to?.name ?? target;
-      return { kind: 'moved', transition: t } as TransitionOutcome;
+    ensureReviewers: vi.fn(async (_repo: string, _n: number, reviewers: readonly string[]) => {
+      const toAdd = reviewers.filter((r) => !state.reviewers.includes(r));
+      state.reviewers.push(...toAdd);
+      return { requested: toAdd, alreadyRequested: reviewers.filter((r) => !toAdd.includes(r)), alreadyReviewed: [], skippedAuthor: [] };
     }),
   };
+
+  const fakeJira = fakeJiraWorkflow(over.status ?? 'In Progress', { workflow: over.workflow });
+  const client = new JiraClient({ baseUrl: 'https://x.atlassian.net', email: 'e', apiToken: 't' }, fakeJira.fetchImpl);
+  const jira: JiraLike = {
+    getIssue: async (key) => ({ ...(await client.getIssue(key)), key, summary: SUMMARY }),
+    moveToStatus: vi.fn((key: string, target: string, o?: Parameters<JiraLike['moveToStatus']>[2]) => client.moveToStatus(key, target, o)),
+  };
+  const jstate = fakeJira.state;
 
   const log = createMemoryLogger();
   const deps = (extra: Partial<RunDeps> = {}): RunDeps => ({
@@ -118,7 +112,7 @@ function createWorld(
     printResult: (l) => state.stdout.push(l),
     ...extra,
   });
-  return { state, git, gh, jira, log, deps };
+  return { state, jstate, git, gh, jira, log, deps };
 }
 
 const baseOpts: RunOptions = { message: 'tambah enrichment', jira: true, teams: true };
@@ -134,7 +128,7 @@ describe('runPr — alur lengkap', () => {
       expect.objectContaining({ repo: REPO, base: 'development', head: 'feature/LOGIS-3938-bulk-last-route', title: 'LOGIS-3938: tambah enrichment' }),
     );
     expect(res).toMatchObject({ prUrl: PR_URL, prCreated: true, committed: true, jira: 'moved', teams: 'sent' });
-    expect(w.state.status).toBe('Code Review');
+    expect(w.jstate.status).toBe('Code Review');
     expect(w.state.teams[0]?.text).toBe(
       [
         'Task: Review PR LOGIS-3938',
@@ -155,7 +149,7 @@ describe('runPr — alur lengkap', () => {
     const second = await runPr(baseOpts, w.deps());
 
     expect(w.gh.createPr).toHaveBeenCalledTimes(1);
-    expect(w.state.posts).toBe(1);
+    expect(w.jstate.posts).toBe(1);
     expect(w.state.commits).toHaveLength(1); // tree sudah bersih → tidak commit lagi
     expect(second).toMatchObject({ prUrl: PR_URL, prCreated: false, committed: false, jira: 'already', teams: 'already-sent' });
     expect(w.state.teams).toHaveLength(1); // tidak spam grup Teams
@@ -193,6 +187,58 @@ describe('runPr — alur lengkap', () => {
     const res = await runPr({ ...baseOpts, base: 'staging', draft: true, ticket: '4001' }, w.deps());
     expect(res.ticketKey).toBe('LOGIS-4001');
     expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ base: 'staging', draft: true }));
+  });
+});
+
+describe('runPr — Jira bertahap & reviewer', () => {
+  it('tiket To Do → In Progress → Code Review, dicatat per langkah', async () => {
+    const w = createWorld({ status: 'To Do' });
+    const res = await runPr({ ...baseOpts, yes: true }, w.deps());
+    expect(res.jira).toBe('moved');
+    expect(w.jstate.history).toEqual(['To Do → In Progress', 'In Progress → Code Review']);
+    const moved = w.log.lines.filter((l) => l.startsWith('ok: Tiket dipindah'));
+    expect(moved).toHaveLength(2);
+  });
+
+  it('dry-run dari To Do: rencana langkah pertama + lanjutan, tanpa POST', async () => {
+    const w = createWorld({ status: 'To Do' });
+    const res = await runPr({ ...baseOpts, dryRun: true }, w.deps());
+    expect(res.jira).toBe('planned');
+    expect(w.jstate.posts).toBe(0);
+    const all = w.log.lines.join('\n');
+    expect(all).toMatch(/Akan memindahkan tiket 'To Do' → 'In Progress'/);
+    expect(all).toMatch(/Lalu lanjut bertahap ke: Code Review/);
+    expect(all).toMatch(/Akan meminta review dari: firdausnp/);
+    expect(w.gh.ensureReviewers).not.toHaveBeenCalled();
+  });
+
+  it('reviewer default firdausnp diminta di PR baru, run ulang tidak minta ulang', async () => {
+    const w = createWorld();
+    const r1 = await runPr({ ...baseOpts, yes: true }, w.deps());
+    expect(w.gh.ensureReviewers).toHaveBeenCalledWith('developerserasiautoraya/SELOG_LOGIS_ServiceOrder', 1886, ['firdausnp']);
+    expect(r1.reviewers).toBe('requested');
+    const r2 = await runPr({ ...baseOpts, yes: true }, w.deps());
+    expect(r2.reviewers).toBe('already');
+    expect(w.state.reviewers).toEqual(['firdausnp']);
+  });
+
+  it('-r meng-override config; -r none mematikan', async () => {
+    const w = createWorld();
+    await runPr({ ...baseOpts, yes: true, reviewers: '@a, b' }, w.deps());
+    expect(w.gh.ensureReviewers).toHaveBeenLastCalledWith(expect.any(String), 1886, ['a', 'b']);
+    const w2 = createWorld();
+    const res = await runPr({ ...baseOpts, yes: true, reviewers: 'none' }, w2.deps());
+    expect(w2.gh.ensureReviewers).not.toHaveBeenCalled();
+    expect(res.reviewers).toBe('skipped');
+  });
+
+  it('gagal minta review → warning, Jira & Teams tetap jalan', async () => {
+    const w = createWorld();
+    w.gh.ensureReviewers = async () => {
+      throw new CliError('Gagal meminta review dari firdausnp', { hint: 'akses repo' });
+    };
+    const res = await runPr({ ...baseOpts, yes: true }, w.deps());
+    expect(res).toMatchObject({ reviewers: 'failed', jira: 'moved', teams: 'sent' });
   });
 });
 
@@ -280,7 +326,7 @@ describe('runPr — dry-run', () => {
     expect(w.git.stageTracked).not.toHaveBeenCalled();
     expect(w.git.stagePaths).not.toHaveBeenCalled();
     expect(w.gh.createPr).not.toHaveBeenCalled();
-    expect(w.state.posts).toBe(0);
+    expect(w.jstate.posts).toBe(0);
     expect(sendTeams).not.toHaveBeenCalled();
     expect(w.state.copied).toEqual([]);
     expect(res).toMatchObject({ jira: 'planned', teams: 'planned' });
@@ -292,11 +338,13 @@ describe('runPr — dry-run', () => {
 
 describe('runPr — langkah non-kritis gagal', () => {
   it('transisi tidak tersedia → warning + daftar transisi, proses lanjut', async () => {
-    const w = createWorld({ transitions: [{ id: '31', name: 'Done', to: { name: 'Done' } }] });
+    const w = createWorld({ status: 'Defect Bugs' });
     const res = await runPr(baseOpts, w.deps());
     expect(res.jira).toBe('unavailable');
     expect(res.teams).toBe('sent');
-    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('Transisi yang ada: Done'))).toBe(true);
+    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes("Berhenti di status 'Defect Bugs'"))).toBe(true);
+    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('Transisi yang ada:') && l.includes('In Fixing'))).toBe(true);
+    expect(w.jstate.posts).toBe(0);
   });
 
   it('Teams gagal → warning, pesan dicetak untuk dikirim manual, link PR tetap tercetak', async () => {

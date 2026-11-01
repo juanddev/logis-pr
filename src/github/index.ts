@@ -151,4 +151,74 @@ export class GitHub {
     if (!url) throw new CliError(`PR mungkin dibuat, tetapi URL tidak terbaca dari output gh:\n${res.stdout}`);
     return url.trim();
   }
+
+  /**
+   * Minta review dari `reviewers` untuk PR. Idempoten: reviewer yang sudah diminta atau sudah
+   * memberi review dilewati (tidak ada notifikasi ulang), dan penulis PR tidak bisa me-review PR-nya
+   * sendiri. Memakai REST API lewat `gh api` (lebih stabil dibanding `gh pr edit`).
+   */
+  async ensureReviewers(repo: string, prNumber: number, reviewers: readonly string[]): Promise<ReviewerResult> {
+    const result: ReviewerResult = { requested: [], alreadyRequested: [], alreadyReviewed: [], skippedAuthor: [] };
+    if (reviewers.length === 0) return result;
+    const base = `repos/${repo}/pulls/${prNumber}`;
+
+    const pr = await this.apiJson<{ user?: { login?: string }; requested_reviewers?: Array<{ login?: string }> }>(
+      [base],
+      'membaca PR',
+    );
+    const reviews = await this.apiJson<Array<{ user?: { login?: string } }>>([`${base}/reviews?per_page=100`], 'membaca review PR');
+    const lc = (s: string | undefined) => (s ?? '').toLowerCase();
+    const author = lc(pr.user?.login);
+    const requested = new Set((pr.requested_reviewers ?? []).map((r) => lc(r.login)));
+    const reviewed = new Set(reviews.map((r) => lc(r.user?.login)));
+
+    const toAdd: string[] = [];
+    for (const r of reviewers) {
+      const k = lc(r);
+      if (k === author) result.skippedAuthor.push(r);
+      else if (requested.has(k)) result.alreadyRequested.push(r);
+      else if (reviewed.has(k)) result.alreadyReviewed.push(r);
+      else toAdd.push(r);
+    }
+    if (toAdd.length === 0) return result;
+
+    const args = ['api', '-X', 'POST', `${base}/requested_reviewers`];
+    for (const r of toAdd) args.push('-f', `reviewers[]=${r}`);
+    const res = await this.exec(args);
+    if (res.code !== 0) {
+      const detail = (res.stderr || res.stdout).trim();
+      let hint: string | undefined;
+      if (/collaborator/i.test(detail)) {
+        hint = `Pastikan ${toAdd.join(', ')} punya akses ke repo ${repo} (collaborator / anggota tim org).`;
+      } else if (/HTTP 404|Not Found/i.test(detail)) {
+        hint = 'Username reviewer tidak ditemukan, atau akun gh Anda tidak punya izin meminta review di repo ini.';
+      }
+      throw new CliError(`Gagal meminta review dari ${toAdd.join(', ')}:\n${detail}`, { hint });
+    }
+    result.requested = toAdd;
+    return result;
+  }
+
+  private async apiJson<T>(args: string[], what: string): Promise<T> {
+    const res = await this.exec(['api', ...args]);
+    if (res.code !== 0) throw new CliError(`Gagal ${what}:\n${(res.stderr || res.stdout).trim()}`);
+    try {
+      return JSON.parse(res.stdout) as T;
+    } catch {
+      throw new CliError(`Output gh api tidak bisa dibaca saat ${what}.`);
+    }
+  }
+}
+
+export interface ReviewerResult {
+  requested: string[];
+  alreadyRequested: string[];
+  alreadyReviewed: string[];
+  skippedAuthor: string[];
+}
+
+/** Nomor PR dari URL `https://github.com/o/r/pull/123`. */
+export function prNumberFromUrl(url: string): number | null {
+  const m = url.match(/\/pull\/(\d+)/);
+  return m?.[1] ? Number(m[1]) : null;
 }

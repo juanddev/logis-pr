@@ -1,7 +1,7 @@
-import { missingFields, ENV_VARS, type Config } from '../config/index.js';
+import { missingFields, ENV_VARS, parseReviewers, splitList, type Config } from '../config/index.js';
 import { isEmbeddedRepo, looksSensitive, parseRemoteUrl, planCommit, type Git } from '../git/index.js';
-import type { GitHub, PullRequest } from '../github/index.js';
-import type { JiraClient, JiraIssue } from '../jira/index.js';
+import { prNumberFromUrl, type GitHub, type PullRequest } from '../github/index.js';
+import type { JiraClient, JiraIssue, TransitionStep } from '../jira/index.js';
 import {
   buildDesc,
   buildPrBody,
@@ -28,6 +28,8 @@ export interface RunOptions {
   yes?: boolean;
   /** -a/--all: ikutkan file baru (untracked) tanpa ditanya. */
   all?: boolean;
+  /** -r/--reviewers: override config prReviewers (dipisah koma; 'none' = tanpa reviewer). */
+  reviewers?: string;
   /** false bila --no-jira */
   jira: boolean;
   /** false bila --no-teams */
@@ -48,7 +50,7 @@ export type GitLike = Pick<
   | 'push'
   | 'lastCommitSubject'
 >;
-export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr'>;
+export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr' | 'ensureReviewers'>;
 export type JiraLike = Pick<JiraClient, 'getIssue' | 'moveToStatus'>;
 
 export interface RunDeps {
@@ -77,6 +79,8 @@ export interface NotifiedStore {
   markSent(prUrl: string): Promise<void>;
 }
 
+export type ReviewersStep = 'requested' | 'already' | 'planned' | 'failed' | 'skipped';
+
 export type JiraStep = 'moved' | 'already' | 'planned' | 'unavailable' | 'failed' | 'skipped';
 export type TeamsStep = 'sent' | 'already-sent' | 'planned' | 'cancelled' | 'failed' | 'skipped';
 
@@ -87,6 +91,7 @@ export interface RunResult {
   prUrl: string;
   prCreated: boolean;
   committed: boolean;
+  reviewers: ReviewersStep;
   jira: JiraStep;
   teams: TeamsStep;
   message: TeamsMessage;
@@ -298,6 +303,33 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     }
   }
 
+  // Reviewer (non-kritis): gagal → warning, proses lanjut.
+  const reviewers = opts.reviewers !== undefined ? parseReviewers(opts.reviewers) : parseReviewers(config.prReviewers);
+  let reviewersStep: ReviewersStep = 'skipped';
+  if (reviewers.length > 0) {
+    const prNumber = existing?.number ?? prNumberFromUrl(prUrl);
+    if (dry) {
+      reviewersStep = 'planned';
+      log.info(`[dry-run] Akan meminta review dari: ${reviewers.join(', ')}`);
+    } else if (!prNumber) {
+      reviewersStep = 'failed';
+      log.warn(`Nomor PR tidak terbaca dari ${prUrl}; reviewer tidak di-assign.`);
+    } else {
+      try {
+        const r = await gh.ensureReviewers(repoFull, prNumber, reviewers);
+        if (r.requested.length) log.ok(`Review diminta dari: ${r.requested.join(', ')}`);
+        if (r.alreadyRequested.length) log.ok(`Reviewer sudah terpasang: ${r.alreadyRequested.join(', ')}`);
+        if (r.alreadyReviewed.length) log.ok(`Sudah memberi review (tidak diminta ulang): ${r.alreadyReviewed.join(', ')}`);
+        if (r.skippedAuthor.length) log.info(`Dilewati karena penulis PR sendiri: ${r.skippedAuthor.join(', ')}`);
+        reviewersStep = r.requested.length ? 'requested' : 'already';
+      } catch (err) {
+        reviewersStep = 'failed';
+        log.warn(`Gagal meminta review: ${errorMessage(err)}`);
+        if (err instanceof CliError && err.hint) log.dim(`    Saran: ${err.hint}`);
+      }
+    }
+  }
+
   // ── 3. Jira → Code Review ────────────────────────────────────────────────────
   log.step(`[3/4] Jira → ${config.jiraReviewStatus}`);
   let jiraStep: JiraStep;
@@ -309,27 +341,34 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       const outcome = await deps.jira.moveToStatus(ticketKey, config.jiraReviewStatus, {
         currentStatus: issue?.status,
         dryRun: dry,
+        via: splitList(config.jiraTransitionPath),
       });
+      const fmt = (st: TransitionStep) => `'${st.from}' → '${st.to}' (via '${st.transition.name}')`;
       switch (outcome.kind) {
         case 'already':
           jiraStep = 'already';
           log.ok(`Tiket sudah di status '${outcome.status}', dilewati.`);
           break;
-        case 'planned':
+        case 'planned': {
           jiraStep = 'planned';
-          log.info(`[dry-run] Akan menjalankan transisi '${outcome.transition.name}' (id ${outcome.transition.id}).`);
+          const first = outcome.steps[0];
+          if (first) log.info(`[dry-run] Akan memindahkan tiket ${fmt(first)}.`);
+          if (outcome.next.length) log.dim(`    Lalu lanjut bertahap ke: ${outcome.next.join(' → ')}`);
           break;
+        }
         case 'moved':
           jiraStep = 'moved';
-          log.ok(`Tiket dipindah via '${outcome.transition.name}' → ${config.jiraReviewStatus}.`);
+          for (const st of outcome.steps) log.ok(`Tiket dipindah ${fmt(st)}.`);
           break;
         case 'unavailable':
           jiraStep = 'unavailable';
-          log.warn(`Transisi ke '${config.jiraReviewStatus}' tidak tersedia dari status '${issue?.status ?? '?'}'.`);
+          for (const st of outcome.steps) log.ok(`Tiket dipindah ${fmt(st)}.`);
+          log.warn(`Berhenti di status '${outcome.status}': tidak ada transisi ke status berikutnya di jalur menuju '${config.jiraReviewStatus}'.`);
           log.warn(
             `Transisi yang ada: ${outcome.available.length ? outcome.available.join(', ') : '(tidak ada)'}. ` +
-              'Pindahkan manual di Jira, atau sesuaikan jiraReviewStatus.',
+              'Pindahkan manual di Jira, atau sesuaikan jiraTransitionPath.',
           );
+          log.dim('    Catatan: Jira menyembunyikan transisi yang syaratnya belum terpenuhi (mis. assignee kosong).');
           break;
       }
     } catch (err) {
@@ -414,6 +453,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     prUrl,
     prCreated,
     committed,
+    reviewers: reviewersStep,
     jira: jiraStep,
     teams: teamsStep,
     message,

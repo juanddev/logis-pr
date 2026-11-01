@@ -40,6 +40,7 @@ interface CliOptions {
   draft?: boolean;
   yes?: boolean;
   all?: boolean;
+  reviewers?: string;
   jira: boolean;
   teams: boolean;
   dryRun?: boolean;
@@ -87,6 +88,7 @@ function buildProgram(): Command {
     .option('-t, --ticket <key>', 'override key tiket dari nama branch (mis. LOGIS-3938)')
     .option('-b, --base <branch>', 'base branch PR (default dari config: baseBranch)')
     .option('-a, --all', 'ikutkan file baru (untracked) ke commit tanpa ditanya')
+    .option('-r, --reviewers <users>', "reviewer PR, dipisah koma (override config prReviewers; 'none' = tanpa reviewer)")
     .option('-d, --draft', 'buat PR sebagai draft')
     .option('-y, --yes', 'lewati konfirmasi: Teams langsung dikirim, file baru tidak ikut (pakai -a)')
     .option('--no-jira', 'jangan pindahkan status tiket di Jira')

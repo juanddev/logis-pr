@@ -54,3 +54,62 @@ export function fakeFetch(routes: FakeRoute[]) {
   }) as unknown as FetchLike;
   return { fetchImpl, requests };
 }
+
+/**
+ * Jira palsu dengan workflow LOGIS (Story) — dipakai untuk menguji transisi bertahap.
+ * Hanya transisi yang tersedia dari status SAAT INI yang dikembalikan (sama seperti Jira asli).
+ */
+export const LOGIS_WORKFLOW: Record<string, string[]> = {
+  'To Do': ['Need Bussiness Requirement', 'Ready For Development', 'In Progress', 'In Testing'],
+  'Need Bussiness Requirement': ['Ready For Development'],
+  'Ready For Development': ['In Progress', 'Hold'],
+  Hold: ['Ready For Development'],
+  'In Progress': ['Code Review'],
+  'Code Review': ['Ready For Test', 'In Fixing'],
+  'Defect Bugs': ['In Fixing'],
+  'In Fixing': ['Code Review'],
+  'In Testing': [],
+};
+const ANY = ['To Do', 'Done', 'Invalid'];
+
+export function fakeJiraWorkflow(initial: string, opts: { workflow?: Record<string, string[]>; failPostTo?: string } = {}) {
+  const workflow = opts.workflow ?? LOGIS_WORKFLOW;
+  const state = { status: initial, history: [] as string[], posts: 0 };
+  const list = () => {
+    const targets = [...(workflow[state.status] ?? []), ...ANY.filter((a) => a !== state.status)];
+    return targets.map((to, i) => ({ id: String(100 + i), name: `Go ${to}`, to: { name: to } }));
+  };
+  let current = list();
+  const { fetchImpl, requests } = fakeFetch([
+    {
+      match: (u) => /\/issue\/[A-Z]+-\d+\?/.test(u),
+      get body() {
+        return { key: 'LOGIS-1', fields: { summary: 'S', status: { name: state.status } } };
+      },
+    },
+    {
+      match: (u) => u.endsWith('/transitions'),
+      get body() {
+        current = list();
+        return { transitions: current };
+      },
+    },
+  ]);
+  const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+    if ((init?.method ?? 'GET').toUpperCase() === 'POST' && String(input).endsWith('/transitions')) {
+      const id = (JSON.parse(String(init?.body)) as { transition: { id: string } }).transition.id;
+      const t = current.find((x) => x.id === id);
+      requests.push({ url: String(input), method: 'POST', headers: {}, body: String(init?.body) });
+      if (!t) return new Response(JSON.stringify({ errorMessages: ['invalid transition'] }), { status: 400 });
+      if (opts.failPostTo && t.to.name === opts.failPostTo) {
+        return new Response(JSON.stringify({ errors: { customfield_1: 'Story Points is required' } }), { status: 400 });
+      }
+      state.posts++;
+      state.history.push(`${state.status} → ${t.to.name}`);
+      state.status = t.to.name;
+      return new Response(null, { status: 204 });
+    }
+    return fetchImpl(input, init);
+  }) as FetchLike;
+  return { fetchImpl: wrapped, requests, state };
+}

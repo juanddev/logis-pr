@@ -42,11 +42,56 @@ export function describeTransitions(transitions: readonly JiraTransition[]): str
   return transitions.map((t) => (t.to?.name && norm(t.to.name) !== norm(t.name) ? `${t.name} → ${t.to.name}` : t.name));
 }
 
+/** Satu langkah perpindahan status yang sudah/akan dijalankan. */
+export interface TransitionStep {
+  from: string;
+  to: string;
+  transition: JiraTransition;
+}
+
 export type TransitionOutcome =
+  /** Sudah di status target sejak awal — tidak ada transisi. */
   | { kind: 'already'; status: string }
-  | { kind: 'moved'; transition: JiraTransition }
-  | { kind: 'planned'; transition: JiraTransition }
-  | { kind: 'unavailable'; available: string[] };
+  /** Berhasil sampai target lewat satu atau beberapa langkah. */
+  | { kind: 'moved'; steps: TransitionStep[] }
+  /** Dry-run: langkah pertama yang akan dijalankan + status berikutnya yang akan dicoba. */
+  | { kind: 'planned'; steps: TransitionStep[]; next: string[] }
+  /** Berhenti sebelum target: tidak ada transisi ke status di jalur. `steps` = langkah yang sempat dijalankan. */
+  | { kind: 'unavailable'; status: string; available: string[]; steps: TransitionStep[] };
+
+/**
+ * Susun jalur status: status perantara (urut sesuai workflow) lalu target di akhir.
+ * Duplikat & kosong dibuang; target selalu terakhir.
+ */
+export function buildStatusPath(via: readonly string[], target: string): string[] {
+  const out: string[] = [];
+  for (const s of [...via, target]) {
+    const v = s.trim();
+    if (v && !out.some((x) => norm(x) === norm(v)) && norm(v) !== norm(target)) out.push(v);
+  }
+  out.push(target.trim());
+  return out;
+}
+
+/**
+ * Pilih transisi berikutnya di sepanjang jalur: coba status TERJAUH dulu (target), mundur ke
+ * status perantara. Hanya status yang posisinya SETELAH status sekarang di jalur yang boleh dipilih,
+ * sehingga tiket tidak pernah dimundurkan. Status di luar jalur (Done, Invalid, dll.) tidak pernah dipilih.
+ */
+export function chooseNextTransition(
+  transitions: readonly JiraTransition[],
+  path: readonly string[],
+  currentStatus: string,
+): { transition: JiraTransition; to: string } | undefined {
+  const idx = path.findIndex((p) => norm(p) === norm(currentStatus));
+  for (let i = path.length - 1; i > idx; i--) {
+    const status = path[i];
+    if (!status) continue;
+    const t = pickTransition(transitions, status);
+    if (t) return { transition: t, to: t.to?.name ?? status };
+  }
+  return undefined;
+}
 
 /** Klien Jira Cloud REST API v3 (Basic auth: email + API token). */
 export class JiraClient {
@@ -151,21 +196,47 @@ export class JiraClient {
   }
 
   /**
-   * Pindahkan tiket ke status target. Idempoten: bila status sekarang sudah target, tidak ada
-   * request POST. Bila transisi tidak tersedia, kembalikan daftar transisi (tidak melempar).
+   * Pindahkan tiket ke status target, BERTAHAP mengikuti `via` bila target tidak bisa dicapai langsung
+   * (mis. To Do → In Progress → Code Review). Idempoten: sudah di target → tidak ada POST.
+   * Setiap langkah membaca ulang status asli dari Jira. Tidak pernah melempar karena transisi tidak
+   * tersedia — kembalikan `unavailable` beserta daftar transisi yang ada.
    */
   async moveToStatus(
     key: string,
     target: string,
-    opts: { currentStatus?: string; dryRun?: boolean } = {},
+    opts: { currentStatus?: string; dryRun?: boolean; via?: readonly string[] } = {},
   ): Promise<TransitionOutcome> {
-    const current = opts.currentStatus ?? (await this.getIssue(key)).status;
+    const path = buildStatusPath(opts.via ?? [], target);
+    let current = opts.currentStatus ?? (await this.getIssue(key)).status;
     if (isSameStatus(current, target)) return { kind: 'already', status: current };
-    const transitions = await this.getTransitions(key);
-    const chosen = pickTransition(transitions, target);
-    if (!chosen) return { kind: 'unavailable', available: describeTransitions(transitions) };
-    if (opts.dryRun) return { kind: 'planned', transition: chosen };
-    await this.doTransition(key, chosen.id);
-    return { kind: 'moved', transition: chosen };
+
+    const steps: TransitionStep[] = [];
+    const seen = new Set([norm(current)]);
+    for (let n = 0; n <= path.length; n++) {
+      const transitions = await this.getTransitions(key);
+      const next = chooseNextTransition(transitions, path, current);
+      if (!next || seen.has(norm(next.to))) {
+        return { kind: 'unavailable', status: current, available: describeTransitions(transitions), steps };
+      }
+      const step = { from: current, to: next.to, transition: next.transition };
+      if (opts.dryRun) {
+        const at = path.findIndex((p) => norm(p) === norm(next.to));
+        return { kind: 'planned', steps: [step], next: at >= 0 ? path.slice(at + 1) : [target] };
+      }
+      try {
+        await this.doTransition(key, next.transition.id);
+      } catch (err) {
+        if (steps.length === 0 || !(err instanceof CliError)) throw err;
+        const done = steps.map((st) => `${st.from} → ${st.to}`).join(', ');
+        throw new CliError(`${err.message} Tiket sudah dipindah (${done}) dan berhenti di status '${current}'.`, {
+          hint: err.hint ?? 'Transisi ini mungkin mewajibkan field tertentu; lanjutkan manual di Jira.',
+        });
+      }
+      steps.push(step);
+      current = (await this.getIssue(key)).status || next.to;
+      if (isSameStatus(current, target)) return { kind: 'moved', steps };
+      seen.add(norm(current));
+    }
+    return { kind: 'unavailable', status: current, available: [], steps };
   }
 }

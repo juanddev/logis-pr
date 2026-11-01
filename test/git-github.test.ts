@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Git, isEmbeddedRepo, looksSensitive, parseRemoteUrl, planCommit } from '../src/git/index.js';
-import { GitHub } from '../src/github/index.js';
+import { GitHub, prNumberFromUrl } from '../src/github/index.js';
 import { lines, normalizeEol } from '../src/utils/exec.js';
 import { fakeRunner } from './helpers.js';
 
@@ -216,5 +216,60 @@ describe('planCommit & helper', () => {
     for (const f of ['.env', 'config/.env.production', 'id_rsa', 'certs/server.pem', 'secrets.json', '.npmrc'])
       expect(looksSensitive(f), f).toBe(true);
     for (const f of ['README.md', 'src/environment.ts', 'docs/secret-santa.md']) expect(looksSensitive(f), f).toBe(false);
+  });
+});
+
+describe('GitHub reviewers (gh api di-mock)', () => {
+  const repo = 'developerserasiautoraya/SELOG_LOGIS_ServiceBilling';
+  const world = (pr: { author: string; requested?: string[]; reviewed?: string[] }, postFail?: string) =>
+    fakeRunner((_c, args) => {
+      const path = args.find((a) => a.startsWith('repos/')) ?? '';
+      if (args.includes('POST')) return postFail ? { code: 1, stderr: postFail } : { stdout: '{}' };
+      if (path.endsWith('/reviews?per_page=100')) {
+        return { stdout: JSON.stringify((pr.reviewed ?? []).map((login) => ({ user: { login } }))) };
+      }
+      return {
+        stdout: JSON.stringify({ user: { login: pr.author }, requested_reviewers: (pr.requested ?? []).map((login) => ({ login })) }),
+      };
+    });
+
+  it('meminta review via REST API dengan reviewers[]', async () => {
+    const { runner, calls } = world({ author: 'juanddev' });
+    const r = await new GitHub(runner).ensureReviewers(repo, 808, ['firdausnp']);
+    expect(r.requested).toEqual(['firdausnp']);
+    const post = calls.find((c) => c.args.includes('POST'));
+    expect(post?.args).toEqual(['api', '-X', 'POST', `repos/${repo}/pulls/808/requested_reviewers`, '-f', 'reviewers[]=firdausnp']);
+  });
+
+  it('idempoten: sudah diminta / sudah review → tidak POST lagi', async () => {
+    const { runner, calls } = world({ author: 'juanddev', requested: ['FirdausNP'], reviewed: ['other'] });
+    const r = await new GitHub(runner).ensureReviewers(repo, 808, ['firdausnp', 'other']);
+    expect(r).toEqual({ requested: [], alreadyRequested: ['firdausnp'], alreadyReviewed: ['other'], skippedAuthor: [] });
+    expect(calls.some((c) => c.args.includes('POST'))).toBe(false);
+  });
+
+  it('penulis PR tidak bisa jadi reviewer sendiri', async () => {
+    const { runner, calls } = world({ author: 'firdausnp' });
+    const r = await new GitHub(runner).ensureReviewers(repo, 808, ['firdausnp']);
+    expect(r.skippedAuthor).toEqual(['firdausnp']);
+    expect(calls.some((c) => c.args.includes('POST'))).toBe(false);
+  });
+
+  it('bukan collaborator → CliError dengan saran', async () => {
+    const { runner } = world({ author: 'juanddev' }, 'gh: Reviews may only be requested from collaborators. (HTTP 422)');
+    const err = await new GitHub(runner).ensureReviewers(repo, 808, ['firdausnp']).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/Gagal meminta review dari firdausnp/);
+    expect((err as { hint?: string }).hint).toMatch(/akses ke repo/);
+  });
+
+  it('daftar kosong → tidak memanggil gh', async () => {
+    const { runner, calls } = world({ author: 'x' });
+    await new GitHub(runner).ensureReviewers(repo, 1, []);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('prNumberFromUrl', () => {
+    expect(prNumberFromUrl(`https://github.com/${repo}/pull/808`)).toBe(808);
+    expect(prNumberFromUrl('https://github.com/o/r/pull/<baru>')).toBeNull();
   });
 });

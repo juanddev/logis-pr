@@ -9,8 +9,8 @@ logis-pr -m "pesan commit"
 menjalankan berurutan:
 
 1. **Commit & push** — commit perubahan file yang sudah dilacak git (file baru ditanya dulu, lihat [File yang ikut commit](#file-yang-ikut-commit)) dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya), lalu `git push --set-upstream origin <branch>`. Working tree bersih → langsung push.
-2. **Pull Request** via `gh` ke base branch (`development` secara default). PR open untuk branch ini sudah ada → dipakai ulang, tidak diduplikasi. Judul PR = pesan commit terakhir (ber-prefix tiket).
-3. **Jira → Code Review** via REST API v3 (GET transitions → pilih transisi yang status tujuan/namanya cocok, case-insensitive → POST). Sudah di Code Review → dilewati. Transisi tidak tersedia → warning + daftar transisi, proses tetap lanjut.
+2. **Pull Request** via `gh` ke base branch (`development` secara default). PR open untuk branch ini sudah ada → dipakai ulang, tidak diduplikasi. Judul PR = pesan commit terakhir (ber-prefix tiket). Review otomatis diminta dari **`firdausnp`** (bisa diubah: `prReviewers` / `-r`).
+3. **Jira → Code Review** via REST API v3, **bertahap** mengikuti workflow bila tidak bisa langsung (mis. `To Do → In Progress → Code Review`). Sudah di Code Review → dilewati. Tidak ada jalur → warning + daftar transisi, proses tetap lanjut. Lihat [Transisi Jira bertahap](#transisi-jira-bertahap).
 4. **Teams** — preview pesan, konfirmasi `[Y/n]`, lalu kirim ke grup chat **Oknum LOGis** dengan format persis:
 
 ```text
@@ -113,6 +113,7 @@ Contoh isi:
   "jiraEmail": "nama@serasiautoraya.co.id",
   "jiraApiToken": "ATATT3x...",
   "jiraReviewStatus": "Code Review",
+  "jiraTransitionPath": "Ready For Development, In Progress",
   "jiraProjectKey": "LOGIS",
   "teamsMode": "workflow",
   "teamsWebhookUrl": "https://....logic.azure.com/workflows/.../invoke?...&sig=...",
@@ -120,6 +121,7 @@ Contoh isi:
   "graphClientId": "",
   "graphChatId": "",
   "baseBranch": "development",
+  "prReviewers": "firdausnp",
   "repoPrefix": "SELOG_LOGIS_"
 }
 ```
@@ -132,6 +134,7 @@ Setiap field bisa di-override dengan environment variable (berguna untuk CI atau
 | `jiraEmail` | `LOGIS_PR_JIRA_EMAIL` | — |
 | `jiraApiToken` | `LOGIS_PR_JIRA_API_TOKEN` | — |
 | `jiraReviewStatus` | `LOGIS_PR_JIRA_REVIEW_STATUS` | `Code Review` |
+| `jiraTransitionPath` | `LOGIS_PR_JIRA_TRANSITION_PATH` | `Ready For Development, In Progress` |
 | `jiraProjectKey` | `LOGIS_PR_JIRA_PROJECT_KEY` | `LOGIS` |
 | `teamsMode` | `LOGIS_PR_TEAMS_MODE` | `workflow` (`graph` untuk fallback) |
 | `teamsWebhookUrl` | `LOGIS_PR_TEAMS_WEBHOOK_URL` | — |
@@ -139,6 +142,7 @@ Setiap field bisa di-override dengan environment variable (berguna untuk CI atau
 | `graphClientId` | `LOGIS_PR_GRAPH_CLIENT_ID` | — |
 | `graphChatId` | `LOGIS_PR_GRAPH_CHAT_ID` | — |
 | `baseBranch` | `LOGIS_PR_BASE_BRANCH` | `development` |
+| `prReviewers` | `LOGIS_PR_REVIEWERS` | `firdausnp` (`none` = tanpa reviewer) |
 | `repoPrefix` | `LOGIS_PR_REPO_PREFIX` | `SELOG_LOGIS_` |
 
 Env lain: `LOGIS_PR_CONFIG` (lokasi file config lain), `LOGIS_PR_ASCII=1` (paksa simbol ASCII), `LOGIS_PR_ASCII=0` (paksa Unicode), `LOGIS_PR_DEBUG=1` (tampilkan stack trace untuk error tak terduga).
@@ -248,6 +252,7 @@ logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 | `-t, --ticket <key>` | override key tiket dari nama branch (`LOGIS-3938` atau `3938`) |
 | `-b, --base <branch>` | base branch PR (default `baseBranch`) |
 | `-a, --all` | ikutkan file baru (untracked) ke commit tanpa ditanya |
+| `-r, --reviewers <users>` | reviewer PR dipisah koma, override `prReviewers` (`-r none` = tanpa reviewer) |
 | `-d, --draft` | buat PR sebagai draft |
 | `-y, --yes` | lewati semua konfirmasi: Teams dikirim, file baru **tidak** ikut (pakai `-a` bila perlu) |
 | `--no-jira` | jangan pindahkan status tiket (summary tetap dibaca bila kredensial ada) |
@@ -309,6 +314,34 @@ Preview pesan: ...
 
 Log ditulis ke stderr; stdout hanya berisi link PR, sehingga bisa dipakai di skrip: `$pr = logis-pr -y` (PowerShell) atau `pr=$(logis-pr -y)` (zsh).
 
+### Transisi Jira bertahap
+
+Jira hanya mengizinkan perpindahan status sesuai workflow, dan API hanya memberi daftar transisi **dari status saat ini**. logis-pr menyusun jalur:
+
+```text
+jiraTransitionPath (status perantara)  +  jiraReviewStatus (target)
+Ready For Development → In Progress   →  Code Review
+```
+
+Di setiap langkah, logis-pr memilih status **terjauh** di jalur yang tersedia dari status sekarang, memindahkan tiket, membaca ulang statusnya, lalu mengulang sampai Code Review:
+
+| Status awal | Langkah |
+| --- | --- |
+| To Do | To Do → In Progress → Code Review |
+| Need Bussiness Requirement | → Ready For Development → In Progress → Code Review |
+| Ready For Development | → In Progress → Code Review |
+| In Progress / In Fixing | → Code Review |
+| Code Review | dilewati |
+| Defect Bugs, In Testing, dll. | berhenti + warning (tambahkan `In Fixing` ke `jiraTransitionPath` bila ingin Defect Bugs → In Fixing → Code Review) |
+
+Pengaman: tiket tidak pernah dimundurkan, dan status di luar jalur (Done, Invalid, Hold, …) tidak pernah dipilih. `--dry-run` menampilkan langkah pertama dan lanjutannya. Bila satu langkah gagal (mis. transisi mewajibkan field tertentu), logis-pr memberi tahu status terakhir tiket.
+
+> Jira menyembunyikan transisi yang syaratnya belum terpenuhi (mis. assignee kosong). Bila logis-pr berhenti di To Do, cek apakah tiket sudah di-assign.
+
+### Reviewer PR
+
+Review otomatis diminta dari `prReviewers` (default `firdausnp`) lewat GitHub API, baik untuk PR baru maupun PR yang sudah ada. Reviewer yang sudah diminta atau sudah memberi review tidak diminta ulang (tidak ada notifikasi ganda), dan penulis PR otomatis dilewati. Gagal meminta review (mis. bukan collaborator repo) hanya memunculkan warning.
+
 ### File yang ikut commit
 
 logis-pr **tidak pernah** menjalankan `git add --all`, supaya file yang tidak sengaja ada di folder (`.DS_Store`, config editor, `.env`, repo lain) tidak ikut ter-commit.
@@ -348,6 +381,7 @@ git & gh terpasang · gh sudah login · berada di repo git · bukan detached HEA
 | PR open untuk branch sudah ada | dipakai ulang, tidak membuat PR baru |
 | `gh pr create` balapan ("already exists") | PR yang ada diambil |
 | Tiket sudah di Code Review | tidak ada POST transisi |
+| Reviewer sudah diminta / sudah review | tidak diminta ulang |
 | Pesan Teams untuk PR ini sudah pernah dikirim | dengan `-y`: tidak dikirim ulang · interaktif: ditanya "Kirim ULANG?" default **Tidak** |
 
 Catatan pengiriman disimpan di `~/.logis-pr-state.json` (per mesin).

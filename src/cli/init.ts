@@ -44,8 +44,15 @@ export async function runInit(log: Logger): Promise<void> {
   );
   next.jiraApiToken = await askSecret('Jira API token', cur.jiraApiToken);
   next.jiraReviewStatus = await ask('Nama status review di board Jira', cur.jiraReviewStatus, required('Status'));
+  next.jiraTransitionPath = await ask(
+    'Status perantara menuju status review, urut sesuai workflow (dipisah koma)',
+    cur.jiraTransitionPath,
+  );
   next.baseBranch = await ask('Base branch default untuk PR', cur.baseBranch, required('Base branch'));
   next.repoPrefix = await ask('Prefix nama repo (dibuang untuk nama Service)', cur.repoPrefix, required('Prefix'));
+  next.prReviewers = await ask("Reviewer PR (username GitHub, dipisah koma; 'none' = tanpa reviewer)", cur.prReviewers, (v) =>
+    v.trim() ? true : "Isi username, atau 'none' bila tidak perlu reviewer",
+  );
 
   next.teamsMode = await select<TeamsMode>(
     {

@@ -10,6 +10,8 @@ export interface Config {
   jiraEmail: string;
   jiraApiToken: string;
   jiraReviewStatus: string;
+  /** Status perantara (dipisah koma, urut sesuai workflow) yang dilewati menuju jiraReviewStatus. */
+  jiraTransitionPath: string;
   jiraProjectKey: string;
   teamsMode: TeamsMode;
   teamsWebhookUrl: string;
@@ -17,6 +19,8 @@ export interface Config {
   graphClientId: string;
   graphChatId: string;
   baseBranch: string;
+  /** Username GitHub reviewer PR (dipisah koma). Kosong = tidak meminta review. */
+  prReviewers: string;
   repoPrefix: string;
 }
 
@@ -28,6 +32,7 @@ export const DEFAULT_CONFIG: Config = {
   jiraEmail: '',
   jiraApiToken: '',
   jiraReviewStatus: 'Code Review',
+  jiraTransitionPath: 'Ready For Development, In Progress',
   jiraProjectKey: 'LOGIS',
   teamsMode: 'workflow',
   teamsWebhookUrl: '',
@@ -35,6 +40,7 @@ export const DEFAULT_CONFIG: Config = {
   graphClientId: '',
   graphChatId: '',
   baseBranch: 'development',
+  prReviewers: 'firdausnp',
   repoPrefix: 'SELOG_LOGIS_',
 };
 
@@ -44,6 +50,7 @@ export const ENV_VARS: Record<ConfigKey, string> = {
   jiraEmail: 'LOGIS_PR_JIRA_EMAIL',
   jiraApiToken: 'LOGIS_PR_JIRA_API_TOKEN',
   jiraReviewStatus: 'LOGIS_PR_JIRA_REVIEW_STATUS',
+  jiraTransitionPath: 'LOGIS_PR_JIRA_TRANSITION_PATH',
   jiraProjectKey: 'LOGIS_PR_JIRA_PROJECT_KEY',
   teamsMode: 'LOGIS_PR_TEAMS_MODE',
   teamsWebhookUrl: 'LOGIS_PR_TEAMS_WEBHOOK_URL',
@@ -51,6 +58,7 @@ export const ENV_VARS: Record<ConfigKey, string> = {
   graphClientId: 'LOGIS_PR_GRAPH_CLIENT_ID',
   graphChatId: 'LOGIS_PR_GRAPH_CHAT_ID',
   baseBranch: 'LOGIS_PR_BASE_BRANCH',
+  prReviewers: 'LOGIS_PR_REVIEWERS',
   repoPrefix: 'LOGIS_PR_REPO_PREFIX',
 };
 
@@ -92,12 +100,14 @@ function normalizeConfig(cfg: Config): Config {
     jiraEmail: cfg.jiraEmail.trim(),
     jiraApiToken: cfg.jiraApiToken.trim(),
     jiraReviewStatus: cfg.jiraReviewStatus.trim(),
+    jiraTransitionPath: cfg.jiraTransitionPath.trim(),
     jiraProjectKey: cfg.jiraProjectKey.trim().toUpperCase(),
     teamsWebhookUrl: cfg.teamsWebhookUrl.trim(),
     graphTenantId: cfg.graphTenantId.trim(),
     graphClientId: cfg.graphClientId.trim(),
     graphChatId: cfg.graphChatId.trim(),
     baseBranch: cfg.baseBranch.trim(),
+    prReviewers: cfg.prReviewers.trim(),
     repoPrefix: cfg.repoPrefix.trim(),
     teamsMode,
   };
@@ -190,4 +200,26 @@ export function missingFields(cfg: Config, req: Requirements): ConfigKey[] {
 
 export function hasJiraCredentials(cfg: Config): boolean {
   return Boolean(cfg.jiraBaseUrl && cfg.jiraEmail && cfg.jiraApiToken);
+}
+
+/** Pecah daftar dipisah koma/spasi, buang kosong & duplikat (case-insensitive). */
+export function splitList(value: string): string[] {
+  const out: string[] = [];
+  for (const raw of value.split(/[,\n]/)) {
+    const v = raw.trim();
+    if (v && !out.some((x) => x.toLowerCase() === v.toLowerCase())) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Username GitHub: buang '@' di depan, sisanya divalidasi longgar. Nilai `none` atau `-` = tanpa reviewer
+ * (string kosong di file config dianggap "pakai default", jadi butuh penanda eksplisit).
+ */
+export function parseReviewers(value: string): string[] {
+  if (/^\s*(none|-)\s*$/i.test(value)) return [];
+  const valid = splitList(value.replace(/\s+/g, ','))
+    .map((r) => r.replace(/^@/, ''))
+    .filter((r) => /^[A-Za-z0-9-]+(\/[A-Za-z0-9._-]+)?$/.test(r));
+  return splitList(valid.join(','));
 }

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { configPath, DEFAULT_CONFIG, loadConfig, missingFields, saveConfig } from '../src/config/index.js';
+import { configPath, DEFAULT_CONFIG, loadConfig, missingFields, parseReviewers, saveConfig, splitList } from '../src/config/index.js';
 import { getGraphToken, sendViaGraph } from '../src/teams/graph.js';
 import { buildPayload } from '../src/teams/index.js';
 import { sendViaWorkflow, validateWebhookUrl } from '../src/teams/workflow.js';
@@ -177,6 +177,23 @@ describe('config', () => {
       'graphClientId',
       'graphChatId',
     ]);
+  });
+});
+
+describe('config: reviewer & jalur status', () => {
+  it('default: reviewer firdausnp, jalur Ready For Development → In Progress', () => {
+    expect(parseReviewers(DEFAULT_CONFIG.prReviewers)).toEqual(['firdausnp']);
+    expect(splitList(DEFAULT_CONFIG.jiraTransitionPath)).toEqual(['Ready For Development', 'In Progress']);
+  });
+  it('parseReviewers: koma/spasi, @, duplikat, none', () => {
+    expect(parseReviewers('@firdausnp, other  firdausnp')).toEqual(['firdausnp', 'other']);
+    expect(parseReviewers('none')).toEqual([]);
+    expect(parseReviewers(' - ')).toEqual([]);
+    expect(parseReviewers('bad user!, ok-user')).toEqual(['bad', 'ok-user']);
+  });
+  it('env LOGIS_PR_REVIEWERS meng-override default', async () => {
+    const loaded = await loadConfig({ homeDir: os.tmpdir(), env: { LOGIS_PR_CONFIG: '/tidak/ada.json', LOGIS_PR_REVIEWERS: 'a,b' } });
+    expect(loaded.config.prReviewers).toBe('a,b');
   });
 });
 
