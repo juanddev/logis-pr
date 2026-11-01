@@ -1,0 +1,58 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:24px}
+.panel{border:1.5px solid var(--line);border-radius:16px;padding:20px 22px}
+.panel h2{font-size:21px;font-weight:800}
+.panel .lead{font-size:15px;color:var(--muted);margin-top:6px;line-height:1.5}
+.files{margin-top:14px;display:grid;gap:8px}
+.f{display:grid;grid-template-columns:30px 1fr auto;align-items:center;gap:10px;border-radius:10px;padding:9px 12px;font-size:14.5px}
+.f code{background:none;padding:0;font-size:14px}
+.f .ic{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff}
+.f .why{font-size:13px;font-weight:600}
+.in{background:var(--ok-bg)} .in .ic{background:var(--ok)} .in .why{color:var(--ok)}
+.ask{background:#fef9c3} .ask .ic{background:#a16207} .ask .why{color:#a16207}
+.out{background:var(--stop-bg)} .out .ic{background:var(--stop)} .out .why{color:var(--stop)}
+.legend{margin-top:14px;font-size:14.5px;line-height:1.6;color:var(--muted)}
+.legend b{color:var(--ink)}
+.chat{background:#1f1f2e;border-radius:14px;padding:16px;margin-top:14px}
+.msg{background:#2e2e48;color:#f1f5f9;border-radius:10px;padding:14px 16px;font-size:14.5px;line-height:1.6}
+.msg a{color:#a5b4fc;text-decoration:underline}
+.who{font-size:12.5px;color:#a1a1aa;margin-bottom:6px}
+.lbl{display:inline-block;font-size:12.5px;font-weight:700;border-radius:6px;padding:3px 8px;margin:14px 0 8px}
+</style></head><body><div id="card">
+<div class="kicker">logis-pr · commit &amp; pesan teams</div>
+<h1>Yang di-commit aman, yang dikirim rapi</h1>
+<p class="sub">logis-pr nggak pernah <code>git add --all</code>. Jadi file nyasar nggak ikut ke PR, dan format pesan ke grup selalu seragam.</p>
+
+<div class="cols">
+  <div class="panel">
+    <h2>File mana yang ikut commit?</h2>
+    <p class="lead">Contoh isi folder pas kamu jalanin <code>logis-pr -m "…"</code>:</p>
+    <div class="files">
+      <div class="f in"><span class="ic">✓</span><code>M  README.md</code><span class="why">ikut, file lama yang kamu ubah</span></div>
+      <div class="f in"><span class="ic">✓</span><code>D  src/old.ts</code><span class="why">ikut, file yang kamu hapus</span></div>
+      <div class="f ask"><span class="ic">?</span><code>?? src/new-module.ts</code><span class="why">file baru, ditanya dulu</span></div>
+      <div class="f ask"><span class="ic">?</span><code>?? .DS_Store</code><span class="why">file baru, default nggak ikut</span></div>
+      <div class="f ask"><span class="ic">!</span><code>?? .env.local</code><span class="why">ditandai ⚠ mungkin rahasia</span></div>
+      <div class="f out"><span class="ic">✕</span><code>?? src/shared-libs/</code><span class="why">repo lain, nggak pernah ikut</span></div>
+    </div>
+    <div class="term" style="margin-top:14px;font-size:14px;padding:12px 14px">Ada 3 file baru yang belum dilacak git:<br><span class="c">&nbsp;&nbsp;src/new-module.ts<br>&nbsp;&nbsp;.DS_Store<br>&nbsp;&nbsp;.env.local&nbsp;&nbsp;⚠ kemungkinan berisi rahasia!</span><br><span class="p">?</span> Ikutkan 3 file baru ini ke commit? <span class="s">(y/N)</span></div>
+    <p class="legend"><b>Udah <code>git add</code> sendiri?</b> Ya cuma itu yang di-commit.<br><b>Ada file baru yang memang mau ikut?</b> Jawab <b>y</b> pas ditanya, atau tambahin <code>-a</code>.<br><b>Pakai <code>-y</code>?</b> File baru otomatis nggak ikut, biar aman.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Pesan yang masuk ke Oknum LOGis</h2>
+    <p class="lead">Desc diambil dari judul tiket Jira, plus <code>in [NamaService]</code> otomatis. Link-nya bisa langsung diklik.</p>
+    <span class="lbl" style="background:var(--dev-bg);color:var(--dev)">PR biasa (feature/)</span>
+    <div class="chat"><div class="who">Juan Valerian Delima · 01:28</div><div class="msg">
+      Task: Review PR LOGIS-3939<br>Desc: [Backend] Add PR Review Automation (logis-pr) Guide to README in [ServiceBilling]<br><br>
+      PR: <a>https://github.com/…/pull/808</a><br>Tiket: <a>https://serasiautoraya.atlassian.net/browse/LOGIS-3939</a></div></div>
+    <span class="lbl" style="background:var(--hot-bg);color:var(--hot)">Hotfix ke production &amp; development</span>
+    <div class="chat"><div class="who">Juan Valerian Delima · 09:12</div><div class="msg">
+      Task: Review PR LOGIS-3944<br>Desc: [Backend] Fix Null Driver on Shipment in [ServiceBilling]<br><br>
+      PR (production): <a>https://github.com/…/pull/902</a><br>PR (development): <a>https://github.com/…/pull/903</a><br>Tiket: <a>https://serasiautoraya.atlassian.net/browse/LOGIS-3944</a></div></div>
+    <p class="legend">Ada preview + konfirmasi <b>[Y/n]</b> sebelum dikirim. Udah pernah dikirim buat PR yang sama? Nggak dikirim ulang.</p>
+  </div>
+</div>
+<div class="foot"><span>Pesan dikirim atas nama kamu lewat flow Teams kamu sendiri.</span><span>github.com/juanddev/logis-pr</span></div>
+</div></body></html>

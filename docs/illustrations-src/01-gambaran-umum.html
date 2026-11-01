@@ -1,0 +1,60 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:22px;position:relative}
+.step{border:1.5px solid var(--line);border-radius:16px;padding:20px 18px 18px;background:#fff;position:relative}
+.step h3{font-size:19px;font-weight:800;margin:14px 0 8px}
+.step p{font-size:15px;color:var(--muted);line-height:1.5}
+.step .tag{margin-top:14px;font-size:13px;font-weight:600;border-radius:8px;padding:6px 10px;display:inline-block}
+.arrow{position:absolute;top:50%;right:-17px;width:16px;height:16px;transform:translateY(-50%);z-index:2}
+.gate{margin-top:22px;display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center;background:var(--panel);border:1.5px dashed #cbd5e1;border-radius:16px;padding:18px 22px}
+.gate b{font-weight:800}
+.gate ul{list-style:none;display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.gate li{font-size:14px;font-weight:600;background:#fff;border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+.shield{width:56px;height:56px;border-radius:14px;background:var(--ok-bg);display:flex;align-items:center;justify-content:center}
+</style></head><body><div id="card">
+<div class="kicker">logis-pr · gambaran umum</div>
+<h1>Satu perintah, urusan review PR beres</h1>
+<p class="sub">Nggak perlu lagi bolak-balik GitHub, Jira, dan Teams. Cukup jalankan ini dari folder repo:</p>
+
+<div class="term" style="margin-top:18px"><span class="p">~/SELOG_LOGIS_ServiceBilling %</span> logis-pr -m <span class="s">"ver:1.0.0 tkt:LOGIS-3939 msg:tambah validasi"</span></div>
+
+<div class="gate">
+  <div class="shield"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></div>
+  <div><b>Langkah 0 — dicek dulu sebelum ngapa-ngapain.</b> <span style="color:var(--muted)">Kalau ada yang nggak beres, logis-pr langsung berhenti, dan belum ada apa pun yang diubah.</span>
+    <ul><li>✔ git & gh siap</li><li>✔ branch dibuat dari <span style="color:var(--prod)">production</span></li><li>✔ nggak konflik dengan target PR</li><li>✔ tiket Jira ketemu</li></ul>
+  </div>
+</div>
+
+<div class="steps">
+  <div class="step">
+    <span class="num" style="background:#334155">1</span>
+    <h3>Commit &amp; push</h3>
+    <p>Yang di-commit cuma perubahan file kamu. File asing kayak <code>.DS_Store</code> atau <code>.env</code> nggak ikut kecuali kamu izinkan.</p>
+    <span class="tag" style="background:#f1f5f9;color:#334155">format commit tim tetap aman</span>
+    <svg class="arrow" viewBox="0 0 16 16"><path d="M3 2l8 6-8 6" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="step">
+    <span class="num" style="background:var(--dev)">2</span>
+    <h3>Bikin PR</h3>
+    <p>PR otomatis ke <b style="color:var(--dev)">development</b>. Branch <code>hotfix/</code> bisa sekalian ke <b style="color:var(--prod)">production</b>.</p>
+    <span class="tag" style="background:var(--dev-bg);color:var(--dev)">reviewer: firdausnp</span>
+    <svg class="arrow" viewBox="0 0 16 16"><path d="M3 2l8 6-8 6" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="step">
+    <span class="num" style="background:var(--vio)">3</span>
+    <h3>Geser tiket Jira</h3>
+    <p>Tiket dipindah sendiri, step by step, sampai <b>Code Review</b>. Misalnya To Do → In Progress → Code Review.</p>
+    <span class="tag" style="background:var(--vio-bg);color:var(--vio)">nggak pernah mundur</span>
+    <svg class="arrow" viewBox="0 0 16 16"><path d="M3 2l8 6-8 6" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="step">
+    <span class="num" style="background:var(--hot)">4</span>
+    <h3>Kabarin di Teams</h3>
+    <p>Pesan "Task: Review PR" masuk ke grup <b>Oknum LOGis</b> atas nama kamu. Ada preview dulu sebelum dikirim.</p>
+    <span class="tag" style="background:var(--hot-bg);color:var(--hot)">link PR ke-copy otomatis</span>
+  </div>
+</div>
+
+<div class="note" style="margin-top:22px;background:var(--ok-bg);color:#14532d"><b>Dijalanin ulang? Santai.</b> PR yang udah ada dipakai lagi, tiket yang udah di Code Review dilewati, reviewer nggak di-request dua kali, dan pesan Teams nggak dobel.</div>
+<div class="foot"><span>Tips: tambahin <code>--dry-run</code> buat lihat rencananya dulu tanpa ngubah apa pun.</span><span>github.com/juanddev/logis-pr</span></div>
+</div></body></html>

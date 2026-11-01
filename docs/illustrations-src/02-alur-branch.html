@@ -1,0 +1,97 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:24px}
+.panel{border:1.5px solid var(--line);border-radius:16px;padding:20px 22px 22px}
+.panel h2{font-size:21px;font-weight:800;display:flex;align-items:center;gap:10px}
+.panel .lead{font-size:15px;color:var(--muted);margin-top:6px;line-height:1.5}
+svg text{font-family:Inter,sans-serif}
+ol.cmd{list-style:none;margin-top:6px;display:grid;gap:8px}
+ol.cmd li{display:grid;grid-template-columns:26px 1fr;gap:10px;align-items:start;font-size:15px;line-height:1.5;color:var(--ink)}
+ol.cmd .n{width:24px;height:24px;border-radius:50%;background:#e2e8f0;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.choice{margin-top:12px;font-family:var(--mono);font-size:14px;background:#0f172a;color:#e2e8f0;border-radius:10px;padding:12px 14px;line-height:1.6}
+.choice .q{color:#4ade80}.choice .sel{color:#fbbf24}
+.bad{margin-top:22px;display:grid;grid-template-columns:420px 1fr;gap:22px;align-items:center;background:var(--stop-bg);border-radius:16px;padding:18px 22px}
+.bad h3{font-size:19px;font-weight:800;color:var(--stop)}
+.bad p{font-size:15px;color:#7f1d1d;line-height:1.55;margin-top:6px}
+</style></head><body><div id="card">
+<div class="kicker">logis-pr · alur branch</div>
+<h1>Semua branch lahir dari <span style="color:var(--prod)">production</span></h1>
+<p class="sub">Biar yang naik ke production cuma kerjaan yang memang siap, bukan "nebeng" fitur lain yang masih di development.</p>
+
+<div class="cols">
+  <!-- FITUR -->
+  <div class="panel">
+    <h2><span class="pill" style="background:var(--dev-bg);color:var(--dev)">feature/</span> Bikin fitur baru</h2>
+    <p class="lead">Cabang dari production, PR-nya ke development.</p>
+    <svg viewBox="0 0 520 250" width="100%" style="margin-top:8px">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d4ed8"/></marker></defs>
+      <text x="14" y="30" font-size="14" font-weight="700" fill="#15803d">production</text>
+      <line x1="14" y1="45" x2="506" y2="45" stroke="#15803d" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="70" cy="45" r="9" fill="#fff" stroke="#15803d" stroke-width="4"/><circle cx="430" cy="45" r="9" fill="#fff" stroke="#15803d" stroke-width="4"/>
+      <text x="14" y="228" font-size="14" font-weight="700" fill="#1d4ed8">development</text>
+      <line x1="14" y1="205" x2="506" y2="205" stroke="#1d4ed8" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="110" cy="205" r="9" fill="#fff" stroke="#1d4ed8" stroke-width="4"/><circle cx="210" cy="205" r="9" fill="#fff" stroke="#1d4ed8" stroke-width="4"/>
+      <path d="M70 45 C 70 95, 110 125, 150 125 L 300 125" fill="none" stroke="#334155" stroke-width="4"/>
+      <circle cx="190" cy="125" r="8" fill="#334155"/><circle cx="260" cy="125" r="8" fill="#334155"/>
+      <text x="150" y="108" font-size="13" font-weight="600" fill="#334155">feature/LOGIS-1234-…</text>
+      <path d="M300 125 C 340 125, 360 160, 372 192" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#ah)"/>
+      <circle cx="380" cy="205" r="11" fill="#1d4ed8"/>
+      <rect x="392" y="140" width="118" height="26" rx="13" fill="#dbeafe"/><text x="451" y="158" font-size="13" font-weight="800" fill="#1d4ed8" text-anchor="middle">PR + cek konflik</text>
+    </svg>
+    <ol class="cmd">
+      <li><span class="n">1</span><span><code>git switch production &amp;&amp; git pull</code></span></li>
+      <li><span class="n">2</span><span><code>git switch -c feature/LOGIS-1234-nama-fitur</code></span></li>
+      <li><span class="n">3</span><span>Ngoding, terus <code>logis-pr -m "…"</code>. PR otomatis ke <b style="color:var(--dev)">development</b>.</span></li>
+    </ol>
+  </div>
+
+  <!-- HOTFIX -->
+  <div class="panel">
+    <h2><span class="pill" style="background:var(--hot-bg);color:var(--hot)">hotfix/</span> Benerin bug di production</h2>
+    <p class="lead">Cabang dari production juga, PR-nya bisa ke dua-duanya.</p>
+    <svg viewBox="0 0 520 250" width="100%" style="margin-top:8px">
+      <defs>
+        <marker id="ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#15803d"/></marker>
+        <marker id="ab" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d4ed8"/></marker>
+      </defs>
+      <text x="14" y="30" font-size="14" font-weight="700" fill="#15803d">production</text>
+      <line x1="14" y1="45" x2="506" y2="45" stroke="#15803d" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="70" cy="45" r="9" fill="#fff" stroke="#15803d" stroke-width="4"/>
+      <circle cx="410" cy="45" r="11" fill="#15803d"/>
+      <text x="14" y="228" font-size="14" font-weight="700" fill="#1d4ed8">development</text>
+      <line x1="14" y1="205" x2="506" y2="205" stroke="#1d4ed8" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="150" cy="205" r="9" fill="#fff" stroke="#1d4ed8" stroke-width="4"/>
+      <circle cx="430" cy="205" r="11" fill="#1d4ed8"/>
+      <path d="M70 45 C 70 95, 110 125, 150 125 L 270 125" fill="none" stroke="#c2410c" stroke-width="4"/>
+      <circle cx="220" cy="125" r="8" fill="#c2410c"/>
+      <text x="140" y="108" font-size="13" font-weight="600" fill="#c2410c">hotfix/LOGIS-1235-…</text>
+      <path d="M270 125 C 330 125, 380 95, 398 60" fill="none" stroke="#15803d" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#ag)"/>
+      <path d="M270 125 C 340 125, 400 160, 418 190" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#ab)"/>
+      <rect x="282" y="72" width="70" height="24" rx="12" fill="#dcfce7"/><text x="317" y="89" font-size="13" font-weight="800" fill="#15803d" text-anchor="middle">PR ①</text>
+      <rect x="296" y="152" width="70" height="24" rx="12" fill="#dbeafe"/><text x="331" y="169" font-size="13" font-weight="800" fill="#1d4ed8" text-anchor="middle">PR ②</text>
+    </svg>
+    <p style="font-size:15px;line-height:1.5">Pas branch-nya diawali <code>hotfix/</code>, logis-pr bakal nanya:</p>
+    <div class="choice"><span class="q">?</span> Branch hotfix: PR ke mana?<br><span class="sel">❯ production dan development</span>  <span style="color:#64748b">← default</span><br>&nbsp;&nbsp;production saja<br>&nbsp;&nbsp;development saja</div>
+  </div>
+</div>
+
+<div class="bad">
+  <svg viewBox="0 0 420 150" width="420">
+    <text x="10" y="24" font-size="14" font-weight="700" fill="#1d4ed8">development</text>
+    <line x1="10" y1="40" x2="410" y2="40" stroke="#1d4ed8" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="80" cy="40" r="9" fill="#fff" stroke="#1d4ed8" stroke-width="4"/>
+    <circle cx="150" cy="40" r="9" fill="#fff" stroke="#1d4ed8" stroke-width="4"/>
+    <text x="176" y="70" font-size="12" font-weight="600" fill="#1d4ed8">↑ fitur orang lain (belum QA)</text>
+    <path d="M150 40 C 150 90, 190 115, 230 115 L 320 115" fill="none" stroke="#334155" stroke-width="4"/>
+    <circle cx="275" cy="115" r="8" fill="#334155"/>
+    <text x="210" y="142" font-size="13" font-weight="600" fill="#334155">feature/LOGIS-…</text>
+    <circle cx="360" cy="112" r="24" fill="#b91c1c"/><path d="M350 102l20 20M370 102l-20 20" stroke="#fff" stroke-width="4.5" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <h3>Jangan begini: bikin branch dari development</h3>
+    <p>Branch kamu jadi ikut bawa commit orang lain yang mungkin belum lolos QA. Kalau nanti naik ke production, ikut kebawa semua. Makanya logis-pr <b>langsung nolak</b> dan nunjukin commit mana yang nyasar.</p>
+    <p style="margin-top:8px"><b>Solusinya:</b> bikin ulang branch dari production, terus <code style="background:#fff">git cherry-pick</code> commit kamu aja.</p>
+  </div>
+</div>
+<div class="foot"><span>Sebelum PR dibuat, merge ke tiap target disimulasiin dulu. Konflik? Berhenti.</span><span>github.com/juanddev/logis-pr</span></div>
+</div></body></html>

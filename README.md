@@ -24,6 +24,8 @@ Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3938
 
 Di akhir, link PR dicetak (stdout) dan disalin ke clipboard.
 
+![Gambaran umum logis-pr](docs/images/01-gambaran-umum.png)
+
 **Aman dijalankan ulang:** tidak ada PR ganda, tidak ada transisi ganda, dan pesan Teams untuk PR yang sama tidak dikirim dua kali (lihat [Idempotensi](#idempotensi)).
 
 ---
@@ -321,6 +323,10 @@ Log ditulis ke stderr; stdout hanya berisi link PR, sehingga bisa dipakai di skr
 
 ### Alur branch production → development
 
+![Alur branch production → development](docs/images/02-alur-branch.png)
+
+![Kapan logis-pr berhenti](docs/images/03-kapan-berhenti.png)
+
 Aturan tim yang ditegakkan logis-pr:
 
 ```text
@@ -360,6 +366,8 @@ Bila hotfix bersih ke production tetapi konflik ke development: jalankan dengan 
 
 ### Transisi Jira bertahap
 
+![Transisi Jira bertahap & reviewer](docs/images/04-jira-bertahap.png)
+
 Jira hanya mengizinkan perpindahan status sesuai workflow, dan API hanya memberi daftar transisi **dari status saat ini**. logis-pr menyusun jalur:
 
 ```text
@@ -387,6 +395,8 @@ Pengaman: tiket tidak pernah dimundurkan, dan status di luar jalur (Done, Invali
 Review otomatis diminta dari `prReviewers` (default `firdausnp`) lewat GitHub API, baik untuk PR baru maupun PR yang sudah ada. Reviewer yang sudah diminta atau sudah memberi review tidak diminta ulang (tidak ada notifikasi ganda), dan penulis PR otomatis dilewati. Gagal meminta review (mis. bukan collaborator repo) hanya memunculkan warning.
 
 ### File yang ikut commit
+
+![File yang ikut commit & pesan Teams](docs/images/05-commit-dan-teams.png)
 
 logis-pr **tidak pernah** menjalankan `git add --all`, supaya file yang tidak sengaja ada di folder (`.DS_Store`, config editor, `.env`, repo lain) tidak ikut ter-commit.
 
@@ -503,3 +513,13 @@ test/        unit test vitest
 Semua dependensi (commander, picocolors, @inquirer/prompts, cross-spawn) dibundel ke `dist/cli.js`, sehingga runtime tidak butuh `node_modules`. Clipboard memakai utilitas bawaan OS (bukan clipboardy) karena biner fallback clipboardy tidak ikut saat dibundel.
 
 CI (`.github/workflows/ci.yml`) menjalankan lint, build, test, dan smoke test instalasi global di `windows-latest` dan `macos-latest`, termasuk menjalankan bundel di Node 20.
+
+### Ilustrasi dokumentasi
+
+Gambar di `docs/images/` dibuat dari HTML di `docs/illustrations-src/`. Setelah mengubah HTML-nya, render ulang:
+
+```text
+NODE_PATH=$(npm root -g) node docs/illustrations-src/render.cjs
+```
+
+Butuh Playwright + Chromium (`npm i -g playwright && npx playwright install chromium`).

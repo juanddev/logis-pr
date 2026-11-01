@@ -1,0 +1,54 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+.rows{margin-top:26px;display:grid;gap:12px}
+.row{display:grid;grid-template-columns:170px 1fr 120px;align-items:center;gap:16px;border:1.5px solid var(--line);border-radius:14px;padding:14px 18px}
+.row .from{font-size:14px;color:var(--soft);font-weight:600}
+.flow{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.st{border-radius:8px;padding:7px 11px;font-size:14px;font-weight:700;white-space:nowrap;border:1.5px solid transparent}
+.st.todo{background:#f1f5f9;color:#334155;border-color:#cbd5e1}
+.st.mid{background:var(--dev-bg);color:var(--dev)}
+.st.cr{background:var(--vio);color:#fff}
+.st.warn{background:var(--hot-bg);color:var(--hot)}
+.flow.tight{flex-wrap:nowrap;gap:5px}.flow.tight .st{font-size:13.5px;padding:7px 9px}
+.ar{color:#94a3b8;font-weight:800;font-size:18px}
+.res{font-size:14px;font-weight:700;text-align:right}
+.rules{margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.rule{background:var(--panel);border-radius:14px;padding:16px 18px;font-size:15px;line-height:1.5;color:var(--muted)}
+.rule b{display:block;color:var(--ink);font-size:16px;margin-bottom:4px}
+.rev{margin-top:22px;display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center;border:1.5px solid var(--line);border-radius:16px;padding:18px 22px}
+.av{width:52px;height:52px;border-radius:50%;background:var(--dev-bg);display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--dev);font-size:18px}
+</style></head><body><div id="card">
+<div class="kicker">logis-pr · jira &amp; reviewer</div>
+<h1>Tiket Jira jalan sendiri sampai <span style="color:var(--vio)">Code Review</span></h1>
+<p class="sub">Jira cuma ngizinin pindah status sesuai workflow. Jadi logis-pr jalan selangkah demi selangkah: pindahin, cek status barunya, lanjut lagi, sampai nyampe.</p>
+
+<div class="rows">
+  <div class="row"><span class="from">Tiket masih <b>To Do</b></span>
+    <div class="flow"><span class="st todo">To Do</span><span class="ar">→</span><span class="st mid">In Progress</span><span class="ar">→</span><span class="st cr">Code Review</span></div>
+    <span class="res" style="color:var(--ok)">✔ 2 langkah</span></div>
+  <div class="row"><span class="from">Masih nunggu requirement</span>
+    <div class="flow tight"><span class="st todo">Need Bussiness Requirement</span><span class="ar">→</span><span class="st mid">Ready For Development</span><span class="ar">→</span><span class="st mid">In Progress</span><span class="ar">→</span><span class="st cr">Code Review</span></div>
+    <span class="res" style="color:var(--ok)">✔ 3 langkah</span></div>
+  <div class="row"><span class="from">Lagi dikerjain / habis fixing</span>
+    <div class="flow"><span class="st mid">In Progress</span><span style="color:#94a3b8;font-weight:600">atau</span><span class="st mid">In Fixing</span><span class="ar">→</span><span class="st cr">Code Review</span></div>
+    <span class="res" style="color:var(--ok)">✔ langsung</span></div>
+  <div class="row"><span class="from">Udah di Code Review</span>
+    <div class="flow"><span class="st cr">Code Review</span><span style="font-size:14.5px;color:var(--muted)">nggak diapa-apain</span></div>
+    <span class="res" style="color:var(--soft)">— dilewati</span></div>
+  <div class="row" style="background:#fffbeb;border-color:#fde68a"><span class="from">Defect Bugs, In Testing, dll.</span>
+    <div class="flow"><span class="st warn">Defect Bugs</span><span class="ar" style="color:var(--hot)">✕</span><span style="font-size:14.5px;color:#7c2d12">nggak ada jalan ke Code Review, jadi berhenti dan dikasih daftar transisi yang ada</span></div>
+    <span class="res" style="color:var(--hot)">⚠ manual</span></div>
+</div>
+
+<div class="rules">
+  <div class="rule"><b>Nggak pernah mundur</b>Tiket cuma digeser maju di jalur menuju Code Review. Status kayak Done, Invalid, atau Hold nggak bakal dipilih.</div>
+  <div class="rule"><b>Assign tiketnya dulu</b>Jira suka nyembunyiin transisi kalau syaratnya belum lengkap, misalnya assignee masih kosong.</div>
+  <div class="rule"><b>Jalurnya bisa diatur</b>Default-nya lewat Ready For Development dan In Progress. Workflow beda? Ubah aja di config <code>jiraTransitionPath</code>.</div>
+</div>
+
+<div class="rev">
+  <div class="av">FN</div>
+  <div style="font-size:16px;line-height:1.55"><b>Reviewer otomatis: firdausnp.</b> <span style="color:var(--muted)">Langsung di-request di setiap PR (hotfix dapat dua-duanya). Kalau udah di-request atau udah ngereview, nggak di-request ulang, jadi nggak ada notif dobel. Mau ganti? Pakai <code>-r username</code>, atau <code>-r none</code> buat tanpa reviewer.</span></div>
+</div>
+<div class="foot"><span>Pakai <code>--dry-run</code> buat lihat langkah pertamanya dulu.</span><span>github.com/juanddev/logis-pr</span></div>
+</div></body></html>
