@@ -1,0 +1,81 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:22px}
+.panel{border:1.5px solid var(--line);border-radius:16px;padding:18px 20px 20px;display:flex;flex-direction:column;gap:12px}
+.panel h2{font-size:20px;font-weight:800;display:flex;align-items:center;gap:10px}
+.panel .lead{font-size:14.5px;color:var(--muted);line-height:1.5}
+.out{font-family:var(--mono);font-size:12.5px;line-height:1.6;background:#0f172a;border-radius:10px;padding:12px 14px;color:#e2e8f0;white-space:pre;overflow:hidden}
+.out .ok{color:#4ade80}.out .x{color:#fca5a5}.out .d{color:#94a3b8}.out .h{color:#fbbf24;font-weight:700}
+.when{margin-top:22px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.when div{background:var(--panel);border-radius:12px;padding:12px 14px;font-size:14.5px;line-height:1.5}
+.when b{display:block;font-size:15px;margin-bottom:3px}
+.safe{margin-top:20px;display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center;background:var(--ok-bg);border-radius:16px;padding:16px 22px;color:#14532d;font-size:15.5px;line-height:1.55}
+.safe ul{list-style:none;display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.safe code{white-space:nowrap}
+.safe li{font-size:13.5px;font-weight:600;background:#fff;border-radius:999px;padding:4px 12px}
+.cmp{margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.cmp .note b{display:block;margin-bottom:2px}
+</style></head><body><div id="card">
+<div class="kicker">logis-pr v2 · audit</div>
+<h1><code style="font-size:30px;background:#f1f5f9">logis-pr --audit</code>: cek dulu, aman nggak sih?</h1>
+<p class="sub">Penilaian cepat buat branch tiket, branch <code>-dev</code>, dan isi PR kamu, tanpa ngubah apa pun. Hasil akhirnya cuma dua: <b style="color:var(--ok)">AMAN</b> atau <b style="color:var(--stop)">TIDAK AMAN</b>.</p>
+
+<div class="cols">
+  <div class="panel">
+    <h2><span class="pill" style="background:var(--ok-bg);color:var(--ok)">AMAN · exit 0</span> Branch bersih</h2>
+    <p class="lead">Isinya cuma commit tiket, <code>-dev</code> sinkron, dan PR di GitHub cocok.</p>
+    <div class="out"><span class="h">Branch tiket LOGIS-3971</span>
+Commit tiket di luar production: 2
+<span class="d">    dbc1237 LOGIS-3971: tambah fitur
+    b7b90d0 LOGIS-3971: update panduan</span>
+<span class="ok">[OK] Branch tiket: bersih</span>
+
+<span class="h">Branch integrasi LOGIS-3971-dev → development</span>
+Commit tiket      : 2 sudah ada, 0 belum
+<span class="ok">[OK] Branch integrasi LOGIS-3971-dev: bersih</span>
+Commit di PR      : 2 tiket, 0 baseline production
+<span class="ok">[OK] Isi PR LOGIS-3971-dev → development: bersih</span>
+PR di GitHub      : #901 2 commit, 2 file
+
+<span class="ok">[OK] AMAN: branch tiket &amp; isi PR hanya berisi
+     commit tiket (plus baseline production).</span></div>
+  </div>
+  <div class="panel">
+    <h2><span class="pill" style="background:var(--stop-bg);color:var(--stop)">TIDAK AMAN · exit 1</span> Ada yang nyasar</h2>
+    <p class="lead">Contoh: development pernah di-merge ke branch tiket. Kalau dipaksa PR, kerjaan orang lain ikut kebawa.</p>
+    <div class="out"><span class="h">Branch tiket LOGIS-3972</span>
+Commit tiket di luar production: 1
+<span class="d">    11615ae LOGIS-3972: perbaikan</span>
+<span class="x">[X] Branch tiket: 7 masalah
+[X]   Commit milik 'development' (belum ada di production): (6)
+[X]     7ba1cd0 LOGIS-371: fitur dev 1
+[X]     b0f0777 LOGIS-372: fitur dev 2</span>
+<span class="d">        …</span>
+<span class="x">[X]   Merge commit yang membawa history non-production: (1)
+[X]     fdd105f Merge … 'origin/development' … (dari development)</span>
+
+<span class="x">[X] TIDAK AMAN (1):
+[X]   Branch tiket: 7 masalah</span></div>
+  </div>
+</div>
+
+<div class="when">
+  <div><b>🌅 Sebelum mulai kerja</b>Pastikan branch tiket masih bersih sebelum nambah commit.</div>
+  <div><b>🔀 Abis merge / cherry-pick</b>Habis sinkron sama production atau ambil commit, cek nggak ada yang nyasar.</div>
+  <div><b>👀 Sebelum minta review</b>PR lama masih bener? Ada PR lama langsung dari branch tiket ke development?</div>
+  <div><b>🧯 Pas logis-pr exit 3</b>Isi PR di GitHub beda? Audit nunjukin commit mana yang nggak dikenal.</div>
+</div>
+
+<div class="safe">
+  <span style="font-size:28px">🛡️</span>
+  <div><b>Beneran cuma baca.</b> Nggak ada fetch, commit, branch baru, worktree, push, maupun PR. Data remote dicek kesegarannya pakai <code style="background:#fff">git ls-remote</code> (cuma dibandingin, nggak disimpan).
+    <ul><li>branch &amp; file kamu utuh</li><li>remote-tracking refs utuh</li><li>nggak ada objek git baru</li><li>kalau datanya basi, dikasih tahu</li></ul>
+  </div>
+</div>
+
+<div class="cmp">
+  <div class="note" style="background:var(--panel)"><b><code>--audit</code></b>Nilai keadaan <i>sekarang</i>: branch tiket, <code>-dev</code>, PR yang udah ada. Nggak butuh <code>-m</code>.</div>
+  <div class="note" style="background:var(--panel)"><b><code>--dry-run -m "…"</code></b>Simulasi <i>yang bakal terjadi</i>: commit, cherry-pick, PR, Jira, Teams. Boleh <code>git fetch</code> dan bilang terus terang.</div>
+</div>
+<div class="foot"><span>Opsi: <code>logis-pr --audit -t LOGIS-1234</code> kalau key tiket nggak ada di nama branch, <code>-b production</code> buat cek PR hotfix.</span><span>github.com/juanddev/logis-pr</span></div>
+</div></body></html>

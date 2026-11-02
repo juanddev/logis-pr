@@ -343,11 +343,11 @@ Log ditulis ke stderr; stdout hanya berisi link PR, sehingga bisa dipakai di skr
 
 ### Alur branch production → LOGIS-XXXX-dev → development
 
-![Alur branch production → development](docs/images/02-alur-branch.png)
+![Alur branch production → LOGIS-XXXX-dev → development](docs/images/02-alur-branch.png)
 
 ![Kapan logis-pr berhenti](docs/images/03-kapan-berhenti.png)
 
-> Gambar di atas masih menggambarkan alur v1.3 (PR langsung dari branch tiket). Aturan terbaru ada di teks berikut dan di [ADR 0001](docs/adr/0001-production-based-ticket-branching-and-pr-isolation.md).
+> Latar belakang keputusan ini ada di [ADR 0001](docs/adr/0001-production-based-ticket-branching-and-pr-isolation.md).
 
 ```text
 production ──┬── LOGIS-1234 (branch tiket) ──────────────PR (hotfix / -b production)──▶ production
@@ -404,6 +404,8 @@ Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3944
 **Catatan baseline:** bila `production` punya commit yang belum ada di `development` (hotfix lama belum di-merge balik), commit itu ikut tampil di PR `-dev` sebagai baseline dan ditandai di output.
 
 ### Audit (`--audit`)
+
+![Audit read-only](docs/images/06-audit.png)
 
 `logis-pr --audit` memeriksa keadaan sekarang **tanpa mengubah apa pun**: tanpa fetch, commit, branch, worktree, maupun push. Data remote memakai remote-tracking refs yang ada; kesegarannya dicek dengan `git ls-remote` (dibandingkan, tidak disimpan). Yang dilaporkan: operasi git yang belum selesai, isi branch tiket, status `-dev`, perkiraan isi PR, PR di GitHub (commit asing, PR lama dari branch tiket). Hasil akhirnya **AMAN** (exit 0) atau **TIDAK AMAN** (exit 1).
 

@@ -2,63 +2,80 @@
 <style>
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}
 .case{border:1.5px solid var(--line);border-radius:16px;padding:20px 22px;display:flex;flex-direction:column;gap:12px}
-.case h2{font-size:20px;font-weight:800;display:flex;gap:12px;align-items:center}
-.case .why{font-size:15px;color:var(--muted);line-height:1.55}
+.case h2{font-size:19px;font-weight:800;display:flex;gap:12px;align-items:center;line-height:1.3}
+.case .why{font-size:14.5px;color:var(--muted);line-height:1.55}
 .stopi{width:36px;height:36px;border-radius:10px;background:var(--stop);display:flex;align-items:center;justify-content:center;flex:none}
-.out{font-family:var(--mono);font-size:13.5px;line-height:1.6;background:#0f172a;border-radius:10px;padding:12px 14px;color:#fca5a5;white-space:pre}
+.exit{margin-left:auto;font-size:12.5px;font-weight:700;color:var(--stop);background:var(--stop-bg);border-radius:999px;padding:4px 10px;white-space:nowrap}
+.out{font-family:var(--mono);font-size:12.5px;line-height:1.6;background:#0f172a;border-radius:10px;padding:12px 14px;color:#fca5a5;white-space:pre;overflow:hidden}
 .out .d{color:#94a3b8}
-.fix{background:var(--ok-bg);border-radius:10px;padding:12px 14px;font-size:15px;line-height:1.55;color:#14532d}
+.fix{background:var(--ok-bg);border-radius:10px;padding:12px 14px;font-size:14.5px;line-height:1.6;color:#14532d}
 .fix b{color:#14532d}
-.fix code{background:#fff}
+.fix code{background:#fff;white-space:nowrap}
 .small{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
 .small div{background:var(--panel);border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.45;color:var(--ink)}
 .small div b{display:block;font-size:14px;margin-bottom:2px}
 .small code{white-space:nowrap}
-.calm{margin-top:22px;display:flex;gap:16px;align-items:center;background:var(--dev-bg);border-radius:16px;padding:18px 22px;color:#1e3a8a;font-size:16px;line-height:1.5}
 </style></head><body><div id="card">
-<div class="kicker">logis-pr · kapan berhenti?</div>
+<div class="kicker">logis-pr v2 · kapan berhenti?</div>
 <h1>Kalau logis-pr berhenti, itu justru lagi nyelametin kamu</h1>
-<p class="sub">Semua pengecekan jalan <b>sebelum</b> commit. Jadi kalau berhenti, belum ada yang ke-push, belum ada PR, dan grup belum dapat pesan apa-apa.</p>
+<p class="sub">Hampir semua pengecekan jalan <b>sebelum</b> commit. Jadi kalau berhenti, belum ada yang ke-push, belum ada PR, dan grup belum dapat pesan apa-apa. logis-pr juga <b>nggak pernah</b> reset, stash, hapus, atau force push apa pun.</p>
 
 <div class="grid">
   <div class="case">
-    <h2><span class="stopi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>Branch-nya bukan dari production</h2>
-    <p class="why">Branch kamu ternyata bawa commit yang cuma ada di development. Biasanya karena bikin branch dari development, atau pernah merge development ke branch kamu.</p>
-    <div class="out">✖ BRANCH TIDAK DIBUAT DARI 'production'
-✖ Branch 'feature/LOGIS-3942-b' membawa 1 commit
-✖ yang hanya ada di 'development':
-✖   7cd7d06 fitur dev X</div>
+    <h2><span class="stopi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>Branch bawa commit yang bukan punya tiket<span class="exit">exit 1</span></h2>
+    <p class="why">Ada commit dari development, staging, atau tiket lain, entah lewat branch dari development, <code>merge development</code>, atau cherry-pick. Yang di-cherry-pick (SHA beda) juga ketahuan karena isi patch-nya dicocokin.</p>
+    <div class="out">✖ BRANCH TIKET MEMBAWA COMMIT YANG BUKAN MILIK TIKET
+✖ Commit milik 'development' (belum ada di production): (6)
+✖   7ba1cd0 LOGIS-371: fitur dev 1
+✖   <span class="d">…</span>
+✖ Merge commit yang membawa history non-production: (1)
+✖   fdd105f Merge 'origin/development' into LOGIS-3972</div>
     <div class="fix"><b>Benerinnya:</b> bikin branch baru dari production, terus ambil commit kamu aja.<br>
       <code>git switch production &amp;&amp; git pull</code><br>
-      <code>git switch -c feature/LOGIS-3942-b-v2</code><br>
+      <code>git switch -c LOGIS-3972-v2</code><br>
       <code>git cherry-pick &lt;sha-commit-kamu&gt;</code></div>
   </div>
 
   <div class="case">
-    <h2><span class="stopi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>Bakal konflik sama target PR</h2>
-    <p class="why">Sebelum bikin PR, logis-pr nyobain merge dulu (simulasi, nggak ngubah file kamu). Kalau ada file yang bentrok, langsung stop. Exit code-nya 2.</p>
+    <h2><span class="stopi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>Ada merge yang belum kelar<span class="exit">exit 1</span></h2>
+    <p class="why">Kamu lagi di tengah <code>git merge</code> / <code>cherry-pick</code> / <code>rebase</code>. Kalau logis-pr commit sekarang, merge itu ikut "diberesin" dan seluruh history development bisa nebeng. Jadi logis-pr berhenti, dan merge-nya <b>nggak</b> diselesaikan maupun di-abort.</p>
+    <div class="out">✖ ADA OPERASI GIT YANG BELUM SELESAI: merge
+✖ Commit sekarang akan ikut menyelesaikan operasi itu
+✖ dan bisa membawa history branch lain ke branch tiket.
+✖ Tidak ada yang diubah.</div>
+    <div class="fix"><b>Benerinnya:</b> batalin sendiri kalau nggak sengaja, <code>git merge --abort</code> (atau <code>git cherry-pick --abort</code>). Cek <code>git status</code>, terus jalanin logis-pr lagi.</div>
+  </div>
+
+  <div class="case">
+    <h2><span class="stopi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>Bakal konflik sama target PR<span class="exit">exit 2</span></h2>
+    <p class="why">Sebelum PR, logis-pr nyobain cherry-pick ke <code>-dev</code> dan merge ke target dulu. Semua itu simulasi di worktree sementara, jadi branch dan file kamu nggak disentuh. Ada file bentrok? Stop.</p>
     <div class="out">✖ KONFLIK — PROSES DIHENTIKAN
-✖ Merge feature/LOGIS-3943-c → development
+✖ Merge LOGIS-3943-dev → development
 ✖ akan konflik di 1 file:
 ✖   src/app.ts</div>
-    <div class="fix"><b>Benerinnya:</b> sesuaiin perubahan kamu di file itu sama isi terbaru target. Cek bedanya pakai <code>git diff origin/development...HEAD -- src/app.ts</code>.<br>
-      <b>Jangan</b> merge development ke branch kamu, nanti malah kena stop yang kiri.</div>
+    <div class="fix"><b>Benerinnya:</b> konflik khusus development diberesin di <code>-dev</code>, <b>bukan</b> di branch tiket:<br>
+      <code>git switch LOGIS-3943-dev</code> → <code>git merge origin/development</code> → beresin → commit → balik ke branch tiket → <code>logis-pr</code></div>
   </div>
-</div>
 
-<div class="case" style="margin-top:20px;background:var(--hot-bg);border-color:#fed7aa">
-  <h2 style="color:var(--hot)">Hotfix konflik cuma ke development?</h2>
-  <p class="why" style="color:#7c2d12">Production-nya aman, tapi development udah beda jauh. Kirim dulu yang penting: <code style="background:#fff">logis-pr -b production -m "…"</code> (atau pilih <b>"production saja"</b>). Habis itu bikin branch dari <b>development</b>, <code style="background:#fff">git cherry-pick</code> commit hotfix-nya, beresin konfliknya di sana, lalu PR ke development.</p>
+  <div class="case">
+    <h2><span class="stopi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>Isi PR di GitHub beda dari yang dicek<span class="exit">exit 3</span></h2>
+    <p class="why">Setelah PR dibuat, commit dan file-nya dicocokin lagi sama hasil validasi lokal. Kalau beda (misal ada yang nge-push ke branch yang sama barengan), reviewer, Jira, dan Teams <b>nggak</b> dijalanin.</p>
+    <div class="out">✖ ISI PR DI GITHUB TIDAK SAMA DENGAN VALIDASI LOKAL
+✖ PR #901 (LOGIS-3971-dev → development):
+✖   1 commit di GitHub tidak ada di validasi lokal
+✖ Reviewer, Jira, dan Teams TIDAK dijalankan.</div>
+    <div class="fix"><b>Benerinnya:</b> buka tab <b>Commits</b> / <b>Files</b> di PR. Kalau isinya salah, ubah ke draft atau tutup PR-nya, terus cek pakai <code>logis-pr --audit</code>.</div>
+  </div>
 </div>
 
 <div style="margin-top:20px">
-  <p style="font-size:15px;font-weight:700;margin-bottom:10px">Stop yang lain (gampang dibenerin, cek pakai <code>logis-pr doctor</code>):</p>
+  <p style="font-size:15px;font-weight:700;margin-bottom:10px">Stop yang lain (gampang dibenerin, cek juga pakai <code>logis-pr doctor</code>):</p>
   <div class="small">
-    <div><b>gh belum login</b>Jalanin <code>gh auth login</code>.</div>
-    <div><b>Lagi di production / development</b>Pindah ke branch kerja dulu.</div>
-    <div><b>Key tiket nggak ketemu</b>Nama branch harus ada <code>LOGIS-1234</code>, atau pakai <code>-t</code>.</div>
-    <div><b>Config belum lengkap</b>Jalanin <code>logis-pr init</code>.</div>
+    <div><b>-dev isinya aneh / bercabang</b>Branch nggak ditimpa. Cek <code>git log origin/production..LOGIS-1234-dev</code>, kalau salah rename: <code>git branch -m … …-old</code>.</div>
+    <div><b>production nggak ada di remote</b>Nggak diganti diam-diam ke <code>main</code>. Set <code>productionBranch</code> / <code>remote</code>.</div>
+    <div><b>Lagi di production / development / -dev</b>Pindah ke branch tiket dulu.</div>
+    <div><b>gh belum login · config kurang · key tiket nggak ketemu</b><code>gh auth login</code>, <code>logis-pr init</code>, atau pakai <code>-t</code>.</div>
   </div>
 </div>
-<div class="foot"><span>Tips: <code>--dry-run</code> juga ngecek semua ini, jadi aman buat nyoba-nyoba.</span><span>github.com/juanddev/logis-pr</span></div>
+<div class="foot"><span>Tips: <code>--dry-run</code> juga ngecek semua ini (kecuali exit 3), jadi aman buat nyoba-nyoba.</span><span>github.com/juanddev/logis-pr</span></div>
 </div></body></html>
