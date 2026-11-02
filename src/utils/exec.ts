@@ -1,5 +1,5 @@
 import spawn from 'cross-spawn';
-import { CommandNotFoundError } from './errors.js';
+import { CliError, CommandNotFoundError } from './errors.js';
 
 export interface ExecResult {
   code: number;
@@ -14,6 +14,8 @@ export interface ExecOptions {
   /** Teruskan stdin terminal ke proses anak (mis. agar git push bisa minta kredensial). */
   inheritStdin?: boolean;
   env?: NodeJS.ProcessEnv;
+  /** Batas waktu (ms). Default 5 menit untuk perintah non-interaktif; perintah dengan stdin terminal tidak dibatasi. */
+  timeoutMs?: number;
 }
 
 /** Abstraksi pemanggilan proses — di test diganti dengan mock. */
@@ -62,12 +64,28 @@ export const runCommand: Runner = (command, args, options = {}) =>
     // Proses yang keluar lebih dulu bisa memicu EPIPE saat kita menulis stdin; abaikan.
     child.stdin?.on('error', () => undefined);
 
+    const limit = options.timeoutMs ?? (options.inheritStdin ? 0 : 5 * 60_000);
+    let timedOut = false;
+    const timer =
+      limit > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill();
+          }, limit)
+        : undefined;
+
     child.on('error', (error: NodeJS.ErrnoException) => {
+      if (timer) clearTimeout(timer);
       if (error.code === 'ENOENT') reject(new CommandNotFoundError(command));
       else reject(error);
     });
 
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        reject(new CliError(`Perintah '${command} ${args.slice(0, 3).join(' ')}…' melebihi batas waktu ${Math.round(limit / 1000)} detik.`));
+        return;
+      }
       resolve({
         code: code ?? 1,
         stdout: normalizeEol(Buffer.concat(out).toString('utf8')),

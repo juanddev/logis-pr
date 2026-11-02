@@ -8,11 +8,12 @@ logis-pr -m "pesan commit"
 
 menjalankan berurutan:
 
-0. **Validasi alur branch** — branch harus dibuat dari `production` (tidak boleh membawa commit milik `development`), dan merge ke setiap target PR disimulasikan dulu. **Konflik = berhenti** sebelum ada commit/push/PR. Lihat [Alur branch production → development](#alur-branch-production--development).
-1. **Commit & push** — commit perubahan file yang sudah dilacak git (file baru ditanya dulu, lihat [File yang ikut commit](#file-yang-ikut-commit)) dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya), lalu `git push --set-upstream origin <branch>`. Working tree bersih → langsung push.
-2. **Pull Request** via `gh` ke `development` (branch `hotfix/…`: pilih **production dan development**, production saja, atau development saja). PR open untuk branch ini sudah ada → dipakai ulang, tidak diduplikasi. Judul PR = pesan commit terakhir (ber-prefix tiket). Review otomatis diminta dari **`firdausnp`** (bisa diubah: `prReviewers` / `-r`).
-3. **Jira → Code Review** via REST API v3, **bertahap** mengikuti workflow bila tidak bisa langsung (mis. `To Do → In Progress → Code Review`). Sudah di Code Review → dilewati. Tidak ada jalur → warning + daftar transisi, proses tetap lanjut. Lihat [Transisi Jira bertahap](#transisi-jira-bertahap).
-4. **Teams** — preview pesan, konfirmasi `[Y/n]`, lalu kirim ke grup chat **Oknum LOGis** dengan format persis:
+0. **Validasi isi branch & PR** — branch tiket harus berbasis `production` dan **hanya** berisi commit tiket: commit milik `development`/`staging` (SHA maupun hasil cherry-pick), commit branch tiket lain, merge non-production, atau merge yang sedang berjalan → **berhenti** sebelum ada commit/push/PR. Merge ke setiap target disimulasikan dulu; **konflik = berhenti**. Lihat [Alur branch](#alur-branch-production--logis-xxxx-dev--development).
+1. **Commit** perubahan file yang sudah dilacak git (file baru ditanya dulu, lihat [File yang ikut commit](#file-yang-ikut-commit)) dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya). Daftar commit tiket ditampilkan dan dikonfirmasi `[y/N]`.
+2. **Branch integrasi `LOGIS-XXXX-dev`** — dibuat/diperbarui dari `production` dengan `git cherry-pick -x` commit tiket, lalu branch tiket & `-dev` di-push (tanpa force).
+3. **Pull Request** via `gh`: `LOGIS-XXXX-dev → development` (branch `hotfix/…`: pilih **production dan development**, production saja, atau development saja; PR ke production langsung dari branch tiket). PR yang sudah ada dipakai ulang. Setelah PR dibuat, **isinya dicek ulang di GitHub** (commit & file harus sama dengan validasi lokal). Review otomatis diminta dari **`firdausnp`** (bisa diubah: `prReviewers` / `-r`).
+4. **Jira → Code Review** via REST API v3, **bertahap** mengikuti workflow bila tidak bisa langsung (mis. `To Do → In Progress → Code Review`). Sudah di Code Review → dilewati. Tidak ada jalur → warning + daftar transisi, proses tetap lanjut. Lihat [Transisi Jira bertahap](#transisi-jira-bertahap).
+5. **Teams** — preview pesan, konfirmasi `[Y/n]`, lalu kirim ke grup chat **Oknum LOGis** dengan format persis:
 
 ```text
 Task: Review PR LOGIS-3938
@@ -50,7 +51,7 @@ Di akhir, link PR dicetak (stdout) dan disalin ke clipboard.
 | Tool | Versi | Catatan |
 | --- | --- | --- |
 | Node.js | ≥ 20 untuk menjalankan, ≥ 22.12 untuk build/test | Node 20 sudah EOL; disarankan Node 22 atau 24 LTS |
-| git | apa saja yang modern | Windows: Git for Windows |
+| git | ≥ 2.38 | dibutuhkan `git merge-tree --write-tree`; Windows: Git for Windows |
 | GitHub CLI (`gh`) | ≥ 2.40 | harus sudah `gh auth login` |
 
 Tidak butuh Bash, WSL, maupun Git Bash. Semua perintah eksternal dijalankan tanpa shell (array argumen), sehingga perilakunya identik di PowerShell, cmd, Windows Terminal, dan zsh.
@@ -125,6 +126,9 @@ Contoh isi:
   "graphChatId": "",
   "baseBranch": "development",
   "productionBranch": "production",
+  "envBranches": "staging, development",
+  "devBranchPattern": "{TICKET}-dev",
+  "remote": "origin",
   "hotfixPrefixes": "hotfix/",
   "prReviewers": "firdausnp",
   "repoPrefix": "SELOG_LOGIS_"
@@ -147,7 +151,10 @@ Setiap field bisa di-override dengan environment variable (berguna untuk CI atau
 | `graphClientId` | `LOGIS_PR_GRAPH_CLIENT_ID` | — |
 | `graphChatId` | `LOGIS_PR_GRAPH_CHAT_ID` | — |
 | `baseBranch` | `LOGIS_PR_BASE_BRANCH` | `development` |
-| `productionBranch` | `LOGIS_PR_PRODUCTION_BRANCH` | `production` |
+| `productionBranch` | `LOGIS_PR_PRODUCTION_BRANCH` | `production` (tidak pernah diganti diam-diam bila tidak ada) |
+| `envBranches` | `LOGIS_PR_ENV_BRANCHES` | `staging, development` (commit-nya tidak boleh ada di branch tiket) |
+| `devBranchPattern` | `LOGIS_PR_DEV_BRANCH_PATTERN` | `{TICKET}-dev` (nama branch integrasi untuk PR ke development) |
+| `remote` | `LOGIS_PR_REMOTE` | `origin` |
 | `hotfixPrefixes` | `LOGIS_PR_HOTFIX_PREFIXES` | `hotfix/` |
 | `prReviewers` | `LOGIS_PR_REVIEWERS` | `firdausnp` (`none` = tanpa reviewer) |
 | `repoPrefix` | `LOGIS_PR_REPO_PREFIX` | `SELOG_LOGIS_` |
@@ -250,6 +257,7 @@ Token disimpan di `~/.logis-pr-graph-token.json` (permission 600) dan diperbarui
 
 ```text
 logis-pr [opsi]
+logis-pr --audit [-t key] [-b branches]
 logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 ```
 
@@ -261,10 +269,11 @@ logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 | `-a, --all` | ikutkan file baru (untracked) ke commit tanpa ditanya |
 | `-r, --reviewers <users>` | reviewer PR dipisah koma, override `prReviewers` (`-r none` = tanpa reviewer) |
 | `-d, --draft` | buat PR sebagai draft |
-| `-y, --yes` | lewati semua konfirmasi: Teams dikirim, file baru **tidak** ikut (pakai `-a` bila perlu) |
+| `-y, --yes` | lewati semua konfirmasi (termasuk daftar commit tiket): Teams dikirim, file baru **tidak** ikut (pakai `-a` bila perlu) |
 | `--no-jira` | jangan pindahkan status tiket (summary tetap dibaca bila kredensial ada) |
 | `--no-teams` | jangan kirim pesan Teams |
-| `--dry-run` | tampilkan semua yang AKAN dilakukan; tidak commit/push/PR/transisi/pesan |
+| `--dry-run` | tampilkan semua yang AKAN dilakukan; tidak commit/branch/push/PR/transisi/pesan (hanya `git fetch`, disebutkan di output) |
+| `--audit` | periksa branch tiket, `-dev`, dan isi PR **tanpa mengubah apa pun** (tanpa fetch); exit 1 bila TIDAK AMAN |
 | `-h, --help` / `-v, --version` | bantuan / versi |
 
 Contoh:
@@ -290,57 +299,89 @@ logis-pr -t LOGIS-3938 -b staging -y
 
 # Cek rencana dulu
 logis-pr --dry-run -m "coba"
+
+# Periksa apakah branch & PR saya bersih (read-only)
+logis-pr --audit
 ```
 
-Contoh output `--dry-run`:
+Contoh output `--dry-run` (hasil nyata di repo uji):
 
 ```text
+[i] Mode --dry-run: tidak ada commit, branch baru, push, PR, transisi Jira, maupun pesan Teams.
+  Mutasi git yang tetap terjadi: git fetch (remote-tracking refs) dan objek sementara untuk simulasi
+  (commit bayangan, cherry-pick di worktree sementara yang langsung dihapus). Branch, index, dan file Anda tidak berubah.
+
 Validasi
-✔ git version 2.47.0.windows.1
-✔ gh version 2.80.0
-✔ gh sudah login
-✔ Repo developerserasiautoraya/SELOG_LOGIS_ServiceOrder · branch feature/LOGIS-3938-bulk-last-route → development · tiket LOGIS-3938
-✔ Jira LOGIS-3938: "[Backend] Enhance Bulk Last Route ..." [In Progress]
+[OK] Repo developerserasiautoraya/SELOG_LOGIS_ServiceOrder · branch tiket LOGIS-3971 · tiket LOGIS-3971
+[OK] PR: LOGIS-3971-dev → development
+  [dry-run] git fetch origin production development staging memperbarui remote-tracking refs.
 
-[1/4] Commit & push
-ℹ [dry-run] Akan commit 1 file: "LOGIS-3938: coba"
-ℹ [dry-run] Akan menjalankan: git push --set-upstream origin feature/LOGIS-3938-bulk-last-route
+[1/5] Branch tiket LOGIS-3971
+[OK] Branch tiket berbasis 'production', 2 commit tiket:
+    dbc1237 LOGIS-3971: tambah fitur
+    (commit baru) LOGIS-3971: update panduan
 
-[2/4] Pull Request
-ℹ [dry-run] Akan membuat PR feature/LOGIS-3938-bulk-last-route → development
+[2/5] Validasi isi PR
+[OK] buat 'LOGIS-3971-dev' dari production (titik awal branch tiket): 2 commit di-cherry-pick, 0 sudah ada
+[OK] PR LOGIS-3971-dev → development: 2 commit tiket · 2 file
 
-[3/4] Jira → Code Review
-ℹ [dry-run] Akan menjalankan transisi 'Ready for Review' (id 21).
+[3/5] Commit, push & Pull Request
+[i] [dry-run] Akan commit 1 file: "LOGIS-3971: update panduan"
+[i] [dry-run] Akan membuat branch 'LOGIS-3971-dev' (cherry-pick -x: dbc1237, commit baru) lalu push
+[i] [dry-run] Akan push branch tiket: git push --set-upstream origin LOGIS-3971
+[i] [dry-run] Akan membuat PR LOGIS-3971-dev → development
+[i] [dry-run] Akan meminta review dari: firdausnp
 
-[4/4] Teams → Oknum LOGis
-Preview pesan: ...
-ℹ [dry-run] Pesan tidak dikirim.
+[4/5] Jira → Code Review
+[5/5] Teams → Oknum LOGis
+[i] [dry-run] Pesan tidak dikirim.
 ```
 
-`--dry-run` tetap melakukan **pembacaan** (git status, `gh pr list`, GET Jira) agar rencana akurat, tetapi tidak ada request yang mengubah apa pun.
+`--dry-run` tetap melakukan **pembacaan** (git status, `gh pr list`, GET Jira) dan `git fetch` agar rencana akurat, tetapi tidak ada request yang mengubah apa pun dan branch/index/file Anda tidak berubah.
 
 Log ditulis ke stderr; stdout hanya berisi link PR, sehingga bisa dipakai di skrip: `$pr = logis-pr -y` (PowerShell) atau `pr=$(logis-pr -y)` (zsh).
 
-### Alur branch production → development
+### Alur branch production → LOGIS-XXXX-dev → development
 
 ![Alur branch production → development](docs/images/02-alur-branch.png)
 
 ![Kapan logis-pr berhenti](docs/images/03-kapan-berhenti.png)
 
-Aturan tim yang ditegakkan logis-pr:
+> Gambar di atas masih menggambarkan alur v1.3 (PR langsung dari branch tiket). Aturan terbaru ada di teks berikut dan di [ADR 0001](docs/adr/0001-production-based-ticket-branching-and-pr-isolation.md).
 
 ```text
-production ──┬── feature/LOGIS-1234-…  ──PR──▶ development
-             └── hotfix/LOGIS-1235-…   ──PR──▶ production  (+ development)
+production ──┬── LOGIS-1234 (branch tiket) ──────────────PR (hotfix / -b production)──▶ production
+             │        │ cherry-pick -x (otomatis)
+             └── LOGIS-1234-dev ──────────────────────────PR───────────────────────────▶ development
 ```
 
-**1. Branch wajib dari `production`.** Setelah `git fetch`, logis-pr memeriksa apakah branch Anda membawa commit yang **hanya ada di `development`** (tanda branch dibuat dari development, atau development pernah di-merge ke branch). Bila ya → **berhenti** dengan warning besar berisi daftar commit tersebut. Perbaikan: buat ulang branch dari production lalu `git cherry-pick` commit Anda saja.
+**1. Branch tiket wajib dari `production` dan hanya berisi commit tiket.** Setelah `git fetch`, logis-pr memeriksa setiap commit di branch tiket (yang belum ada di production), **termasuk commit yang akan dibuat** (dicek lewat commit bayangan, sebelum apa pun diubah). Berhenti (exit 1) bila menemukan:
 
-**2. Tidak boleh konflik.** Sebelum commit, logis-pr membuat commit bayangan berisi perubahan yang akan di-commit (tanpa menyentuh branch, index, atau file Anda) lalu mensimulasikan merge ke setiap target dengan `git merge-tree` (butuh git ≥ 2.38). Ada konflik → **berhenti** (exit code 2) dengan warning besar dan daftar file; tidak ada commit, push, PR, transisi Jira, maupun pesan Teams. Pengecekan ini juga jalan di `--dry-run`.
+| Temuan | Contoh penyebab |
+| --- | --- |
+| Commit milik `development`/`staging` | branch dibuat dari development, atau development di-merge |
+| Salinan (cherry-pick) commit `development`/`staging` | `git cherry-pick` commit development (SHA beda, isi sama → dikenali lewat `git patch-id`) |
+| Merge commit yang bukan dari production | merge development/staging/branch lain |
+| Commit yang ada di branch tiket lain | merge `LOGIS-3920` ke branch Anda |
+| Merge/cherry-pick/rebase **sedang berjalan** | `git merge development` yang belum di-commit (logis-pr tidak menyelesaikan maupun meng-abort-nya) |
 
-> Jangan menyelesaikan konflik dengan merge `development` ke branch fitur/hotfix — branch jadi membawa isi development dan langkah 1 akan menolaknya. Sesuaikan perubahan Anda dengan isi terbaru target.
+Sinkron dengan production **boleh**: `git merge origin/production` dianggap *merge sinkronisasi*.
 
-**3. Hotfix.** Branch berprefix `hotfix/` menanyakan target PR:
+**2. PR ke development selalu dari `LOGIS-XXXX-dev`.** Branch ini dibuat dari titik awal branch tiket di production, lalu setiap commit tiket di-`cherry-pick -x` (simulasi di worktree sementara dulu, baru ref diperbarui secara atomik). Dijalankan ulang → hanya commit baru yang di-cherry-pick (fast-forward, tanpa force push). Isi `-dev` juga divalidasi: hanya cherry-pick commit tiket dan merge penyelesaian konflik dari development/production yang diizinkan; lokal & remote bercabang → berhenti.
+
+**3. Isi PR divalidasi dua kali.** Sebelum push: commit `development..LOGIS-XXXX-dev` dan file `development...LOGIS-XXXX-dev` harus berasal dari commit tiket (plus *baseline* = commit production yang belum ada di development). Setelah PR dibuat/dipakai ulang: `gh pr view` harus cocok (head, base, ujung commit, daftar commit, jumlah file). Tidak cocok → **exit 3**, reviewer/Jira/Teams tidak dijalankan.
+
+**4. Tidak boleh konflik.** Merge ke setiap target disimulasikan dengan `git merge-tree`. Konflik → **berhenti** (exit 2) sebelum commit, dengan warning besar dan daftar file.
+
+> Konflik khusus development diselesaikan di **`LOGIS-XXXX-dev`**, bukan di branch tiket:
+> ```text
+> git switch LOGIS-1234-dev          # dibuat logis-pr, atau buat dari origin/production + cherry-pick -x
+> git merge origin/development        # selesaikan konflik → commit
+> git switch LOGIS-1234
+> logis-pr                            # -dev dipakai ulang, merge penyelesaian konflik diizinkan
+> ```
+
+**5. Hotfix.** Branch berprefix `hotfix/` menanyakan target PR:
 
 ```text
 ? Branch hotfix: PR ke mana?
@@ -349,7 +390,7 @@ production ──┬── feature/LOGIS-1234-…  ──PR──▶ development
   development saja
 ```
 
-Dengan `-y`/non-interaktif, default **production dan development**. Kedua PR dicek konfliknya, diberi reviewer, dan diumumkan dalam **satu** pesan Teams:
+Dengan `-y`/non-interaktif, default **production dan development**: `hotfix/LOGIS-3944-… → production` dan `LOGIS-3944-dev → development`. Keduanya divalidasi, diberi reviewer, dan diumumkan dalam **satu** pesan Teams:
 
 ```text
 Task: Review PR LOGIS-3944
@@ -360,9 +401,11 @@ PR (development): https://github.com/.../pull/903
 Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3944
 ```
 
-Bila hotfix bersih ke production tetapi konflik ke development: jalankan dengan `-b production` (atau pilih "production saja"), lalu port perubahannya ke development lewat branch terpisah dari `development` (`git cherry-pick`) dan selesaikan konfliknya di sana.
+**Catatan baseline:** bila `production` punya commit yang belum ada di `development` (hotfix lama belum di-merge balik), commit itu ikut tampil di PR `-dev` sebagai baseline dan ditandai di output.
 
-**Peringatan tambahan:** bila `production` punya commit yang belum ada di `development` (hotfix lama belum di-merge balik), logis-pr menampilkan daftar commit tersebut karena ikut masuk PR ke development.
+### Audit (`--audit`)
+
+`logis-pr --audit` memeriksa keadaan sekarang **tanpa mengubah apa pun**: tanpa fetch, commit, branch, worktree, maupun push. Data remote memakai remote-tracking refs yang ada; kesegarannya dicek dengan `git ls-remote` (dibandingkan, tidak disimpan). Yang dilaporkan: operasi git yang belum selesai, isi branch tiket, status `-dev`, perkiraan isi PR, PR di GitHub (commit asing, PR lama dari branch tiket). Hasil akhirnya **AMAN** (exit 0) atau **TIDAK AMAN** (exit 1).
 
 ### Transisi Jira bertahap
 
@@ -420,7 +463,7 @@ git config --global core.excludesFile ~/.gitignore_global
 
 ### Validasi di awal (gagal = exit code 1, tanpa efek samping)
 
-git & gh terpasang · gh sudah login · berada di repo git · bukan detached HEAD · bukan di branch production/development · branch berasal dari production · tidak konflik dengan target PR · remote origin adalah repo GitHub · key tiket ditemukan · config lengkap · ada perubahan tetapi `-m` tidak diberikan · tiket bisa diakses di Jira.
+git & gh terpasang · gh sudah login · berada di repo git · tidak ada merge/cherry-pick/rebase yang sedang berjalan · bukan detached HEAD · bukan di branch production/staging/development/`-dev` · remote (`origin`) ada dan repo GitHub · branch production & target ada di remote (tidak diganti diam-diam) · key tiket ditemukan · config lengkap · ada perubahan tetapi `-m` tidak diberikan · tiket bisa diakses di Jira. Lalu: isi branch tiket bersih · `-dev` bersih · isi PR bersih · tidak konflik.
 
 ### Aturan isi pesan
 
@@ -432,8 +475,10 @@ git & gh terpasang · gh sudah login · berada di repo git · bukan detached HEA
 | Situasi saat dijalankan ulang | Perilaku |
 | --- | --- |
 | Working tree bersih / tidak ada file yang ikut | tidak commit; push tetap dijalankan (no-op bila sudah sinkron) |
-| PR open untuk branch sudah ada | dipakai ulang, tidak membuat PR baru |
-| `gh pr create` balapan ("already exists") | PR yang ada diambil |
+| PR open untuk head & base yang sama sudah ada | dipakai ulang, tidak membuat PR baru |
+| `LOGIS-XXXX-dev` sudah ada | hanya commit tiket yang belum ada di-cherry-pick (dikenali dari trailer `-x`/patch-id); tidak ada yang baru → ref tidak berubah |
+| Commit tiket sudah masuk development lewat `-dev` lama | tidak dianggap pencemaran dan tidak di-cherry-pick ulang |
+| `gh pr create` balapan ("already exists") | PR yang ada untuk head **dan base** yang sama diambil |
 | Tiket sudah di Code Review | tidak ada POST transisi |
 | Reviewer sudah diminta / sudah review | tidak diminta ulang |
 | Pesan Teams untuk PR ini sudah pernah dikirim | dengan `-y`: tidak dikirim ulang · interaktif: ditanya "Kirim ULANG?" default **Tidak** |
@@ -441,6 +486,31 @@ git & gh terpasang · gh sudah login · berada di repo git · bukan detached HEA
 Catatan pengiriman disimpan di `~/.logis-pr-state.json` (per mesin).
 
 ## Troubleshooting
+
+**"BRANCH TIKET MEMBAWA COMMIT YANG BUKAN MILIK TIKET"**
+- Branch Anda membawa isi development/staging/tiket lain. Tidak ada yang di-push. Perbaikan (tidak menghapus apa pun):
+  ```text
+  git switch production && git pull
+  git switch -c LOGIS-1234-v2
+  git cherry-pick <sha commit Anda>      # lihat: git log --oneline origin/production..LOGIS-1234
+  logis-pr
+  ```
+- Untuk sinkron, merge `origin/production` saja, jangan development/staging.
+
+**"merge sedang berjalan"**
+- Ada `git merge`/`cherry-pick`/`rebase` yang belum selesai. logis-pr tidak menyelesaikan maupun meng-abort-nya. Batalkan sendiri (`git merge --abort`) atau selesaikan, periksa `git status`, lalu jalankan lagi.
+
+**"BRANCH INTEGRASI 'LOGIS-XXXX-dev' TIDAK BERSIH" / bercabang**
+- `-dev` berisi commit selain cherry-pick commit tiket, atau lokal & remote berbeda arah. logis-pr tidak menimpa/menghapus branch. Periksa: `git log --oneline origin/production..LOGIS-1234-dev`. Bila memang salah: `git branch -m LOGIS-1234-dev LOGIS-1234-dev-old`, hapus branch remote secara manual bila perlu, lalu jalankan lagi.
+
+**"BRANCH TIKET TIDAK BERSIH SETELAH COMMIT"**
+- Commit sudah dibuat di lokal tetapi tidak di-push. Batalkan commit tanpa kehilangan perubahan: `git reset --soft HEAD~1`.
+
+**"ISI PR DI GITHUB TIDAK SAMA DENGAN VALIDASI LOKAL" (exit 3)**
+- Biasanya branch di GitHub berubah di antara validasi dan pembuatan PR (push orang lain). Buka tab Commits/Files di PR, ubah ke draft atau tutup bila salah, lalu `logis-pr --audit`.
+
+**"Ada PR lama langsung dari branch tiket ke development"**
+- Sejak v2.0.0, PR ke development berasal dari `LOGIS-XXXX-dev`. Tutup PR lama secara manual.
 
 **Jira 401 (`Jira menolak kredensial`)**
 - Email salah (harus email akun Atlassian), token salah/kedaluwarsa/dicabut, atau memakai token "with scopes". Buat token klasik baru → `logis-pr init` → `logis-pr doctor`.
@@ -491,7 +561,7 @@ Catatan pengiriman disimpan di `~/.logis-pr-state.json` (per mesin).
 npm install
 npm run dev -- --dry-run -m "coba"   # jalankan dari source (tsx)
 npm run lint                         # ESLint + tsc --noEmit
-npm test                             # vitest (semua HTTP & git/gh di-mock)
+npm test                             # vitest (repo git sungguhan di folder temp; HTTP & gh tiruan)
 npm run build                        # bundel satu file: dist/cli.js
 ```
 
@@ -499,15 +569,16 @@ Struktur:
 
 ```text
 src/
-  cli/       index.ts (commander), run.ts (orkestrasi), init.ts, doctor.ts, graph.ts, prompt.ts
+  cli/       index.ts (commander), run.ts (orkestrasi), audit.ts (--audit), init.ts, doctor.ts, graph.ts, prompt.ts
   config/    index.ts (file + env), state.ts (catatan pesan Teams terkirim)
-  git/       wrapper git (tanpa shell, pesan commit via stdin)
+  git/       index.ts (wrapper git tanpa shell), isolation.ts (provenance, branch -dev, validasi isi PR), flow.ts
   github/    wrapper gh (body PR via stdin, deteksi PR yang sudah ada)
   jira/      REST API v3 + pemilihan transisi
   teams/     workflow.ts (Power Automate), graph.ts (device code + Graph)
   message/   formatter: key tiket, Desc, pesan text/html, escape
   utils/     exec (cross-spawn), http (fetch), term (simbol/ASCII), secret, clipboard
-test/        unit test vitest
+test/        vitest; gitfixture.ts membuat remote/clone sementara (tidak pernah menyentuh repo Anda)
+docs/adr/    keputusan arsitektur (ADR)
 ```
 
 Semua dependensi (commander, picocolors, @inquirer/prompts, cross-spawn) dibundel ke `dist/cli.js`, sehingga runtime tidak butuh `node_modules`. Clipboard memakai utilitas bawaan OS (bukan clipboardy) karena biner fallback clipboardy tidak ikut saat dibundel.

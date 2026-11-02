@@ -136,7 +136,7 @@ export class GitHub {
     if (res.code !== 0) {
       const detail = res.stderr.trim() || res.stdout.trim();
       if (/already exists/i.test(detail)) {
-        const existing = await this.findOpenPr(input.repo, input.head);
+        const existing = await this.findOpenPr(input.repo, input.head, input.base);
         if (existing) return existing.url;
       }
       let hint: string | undefined;
@@ -152,6 +152,35 @@ export class GitHub {
       .find((l) => /^https?:\/\/\S+\/pull\/\d+/.test(l.trim()));
     if (!url) throw new CliError(`PR mungkin dibuat, tetapi URL tidak terbaca dari output gh:\n${res.stdout}`);
     return url.trim();
+  }
+
+  /** Detail PR seperti dihitung GitHub (dipakai untuk verifikasi setelah PR dibuat/dipakai ulang). */
+  async prDetails(repo: string, number: number): Promise<PrDetails> {
+    const res = await this.exec([
+      'pr',
+      'view',
+      String(number),
+      '--repo',
+      repo,
+      '--json',
+      'number,url,headRefName,baseRefName,headRefOid,changedFiles,commits,state',
+    ]);
+    if (res.code !== 0) throw new CliError(`Gagal membaca PR #${number}:\n${res.stderr.trim()}`);
+    try {
+      const d = JSON.parse(res.stdout) as {
+        number: number;
+        url: string;
+        headRefName: string;
+        baseRefName: string;
+        headRefOid: string;
+        changedFiles: number;
+        state?: string;
+        commits?: Array<{ oid: string }>;
+      };
+      return { ...d, commits: (d.commits ?? []).map((c) => c.oid) };
+    } catch {
+      throw new CliError(`Output gh pr view #${number} tidak bisa dibaca.`);
+    }
   }
 
   /**
@@ -210,6 +239,17 @@ export class GitHub {
       throw new CliError(`Output gh api tidak bisa dibaca saat ${what}.`);
     }
   }
+}
+
+export interface PrDetails {
+  number: number;
+  url: string;
+  headRefName: string;
+  baseRefName: string;
+  headRefOid: string;
+  changedFiles: number;
+  state?: string;
+  commits: string[];
 }
 
 export interface ReviewerResult {

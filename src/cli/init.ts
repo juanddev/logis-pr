@@ -50,6 +50,14 @@ export async function runInit(log: Logger): Promise<void> {
   );
   next.productionBranch = await ask('Branch produksi (asal semua branch kerja)', cur.productionBranch, required('Branch produksi'));
   next.baseBranch = await ask('Branch development (target PR fitur)', cur.baseBranch, required('Branch development'));
+  next.envBranches = await ask(
+    'Branch environment lain yang commit-nya tidak boleh masuk branch tiket (dipisah koma)',
+    cur.envBranches,
+  );
+  next.devBranchPattern = await ask('Pola nama branch integrasi untuk PR ke development', cur.devBranchPattern, (v) =>
+    v.includes('{TICKET}') ? true : 'Harus mengandung {TICKET}, mis. {TICKET}-dev',
+  );
+  next.remote = await ask('Nama remote GitHub', cur.remote, required('Remote'));
   next.hotfixPrefixes = await ask('Prefix branch hotfix (dipisah koma)', cur.hotfixPrefixes, required('Prefix hotfix'));
   next.repoPrefix = await ask('Prefix nama repo (dibuang untuk nama Service)', cur.repoPrefix, required('Prefix'));
   next.prReviewers = await ask("Reviewer PR (username GitHub, dipisah koma; 'none' = tanpa reviewer)", cur.prReviewers, (v) =>

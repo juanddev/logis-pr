@@ -1,18 +1,29 @@
-import { describe, expect, it, vi } from 'vitest';
-import { runPr, type GitHubLike, type GitLike, type JiraLike, type RunDeps, type RunOptions } from '../src/cli/run.js';
+/**
+ * Test orkestrasi dengan repo git SUNGGUHAN (folder temp). GitHub, Jira, dan Teams tiruan.
+ * Fokus: PR tercemar tidak mungkin terjadi — regresi untuk kasus "PR berisi puluhan commit / ratusan file".
+ */
+import { existsSync, readdirSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// Repo git sungguhan: lebih lambat dari test mock (terutama di Windows).
+vi.setConfig({ testTimeout: 60_000 });
+import { runAudit } from '../src/cli/audit.js';
+import { runPr, type RunDeps, type RunOptions } from '../src/cli/run.js';
 import { DEFAULT_CONFIG, type Config } from '../src/config/index.js';
-import type { CommitInfo, WorkingTreeStatus } from '../src/git/index.js';
-import type { PullRequest } from '../src/github/index.js';
+import { Git } from '../src/git/index.js';
 import { JiraClient } from '../src/jira/index.js';
-import { fakeJiraWorkflow } from './helpers.js';
 import type { TeamsPayload } from '../src/teams/index.js';
 import { CliError } from '../src/utils/errors.js';
+import { runCommand } from '../src/utils/exec.js';
 import { ASCII_SYMBOLS, createMemoryLogger } from '../src/utils/term.js';
+import { fakeGitHub, localState, makeFixture, REPO, type Fixture } from './gitfixture.js';
+import { fakeJiraWorkflow } from './helpers.js';
 
-const REPO = 'developerserasiautoraya/SELOG_LOGIS_ServiceOrder';
-const SUMMARY = '[Backend] Enhance Bulk Last Route Location Response for Shipment and Driver Enrichment';
-const PR_URL = `https://github.com/${REPO}/pull/1886`;
-
+const SUMMARY = '[Backend] Enhance Bulk Last Route Location Response';
+const BRANCH = 'feature/LOGIS-3938-bulk-last-route';
+const DEV = 'LOGIS-3938-dev';
 const config: Config = {
   ...DEFAULT_CONFIG,
   jiraEmail: 'dev@example.com',
@@ -20,120 +31,58 @@ const config: Config = {
   teamsWebhookUrl: 'https://prod.logic.azure.com/x?sig=y',
 };
 
-/** Dunia palsu yang menyimpan state, sehingga run kedua melihat hasil run pertama. */
-function createWorld(
-  over: {
-    branch?: string | null;
-    dirty?: boolean;
-    wt?: WorkingTreeStatus;
-    status?: string;
-    workflow?: Record<string, string[]>;
-    /** Commit HEAD di luar production. */
-    branchCommits?: CommitInfo[];
-    /** Commit yang hanya ada di development. */
-    devOnly?: CommitInfo[];
-    /** Commit production yang belum ada di development. */
-    unsynced?: CommitInfo[];
-    /** base → file konflik. */
-    conflicts?: Record<string, string[]>;
-    remoteBranches?: string[];
-  } = {},
-) {
-  const clean: WorkingTreeStatus = { staged: [], unstaged: [], untracked: [] };
-  const state = {
-    branch: over.branch === undefined ? 'feature/LOGIS-3938-bulk-last-route' : over.branch,
-    wt: over.wt ?? (over.dirty === false ? clean : { staged: [], unstaged: ['src/a.ts'], untracked: ['src/b.ts'] }),
-    committedFiles: [] as string[][],
-    commits: [] as string[],
-    pushes: 0,
-    prs: [] as PullRequest[],
-    teams: [] as TeamsPayload[],
-    copied: [] as string[],
-    stdout: [] as string[],
-    notified: new Map<string, string>(),
-    reviewers: [] as string[],
-    reviewersByPr: new Map<number, string[]>(),
-  };
-  const git: GitLike = {
-    version: async () => 'git version 2.47.0.windows.1',
-    isRepo: async () => true,
-    currentBranch: async () => state.branch,
-    status: async () => structuredClone(state.wt),
-    remoteUrl: async () => `https://github.com/${REPO}.git`,
-    stageTracked: vi.fn(async () => {
-      state.wt.staged.push(...state.wt.unstaged);
-      state.wt.unstaged = [];
-    }),
-    stagePaths: vi.fn(async (paths: readonly string[]) => {
-      state.wt.staged.push(...paths);
-      state.wt.untracked = state.wt.untracked.filter((p) => !paths.includes(p));
-    }),
-    commitStaged: vi.fn(async (m: string) => {
-      state.commits.push(m);
-      state.committedFiles.push([...state.wt.staged]);
-      state.wt.staged = [];
-    }),
-    push: vi.fn(async () => {
-      state.pushes++;
-    }),
-    lastCommitSubject: async () => state.commits.at(-1)?.split('\n')[0] ?? 'LOGIS-3938: commit lama',
-    fetch: vi.fn(async () => undefined),
-    refExists: async (ref: string) => (over.remoteBranches ?? ['production', 'development']).map((b) => `origin/${b}`).includes(ref),
-    commitsBetween: async (include: string, exclude: readonly string[]) => {
-      if (include === 'HEAD') return over.branchCommits ?? [{ sha: 'f1', line: 'f1 fitur' }];
-      if (include === 'origin/development' && exclude[0] === 'origin/production') return over.devOnly ?? [{ sha: 'd1', line: 'd1 dev' }];
-      if (include === 'origin/production') return over.unsynced ?? [];
-      return [];
-    },
-    snapshotCommit: vi.fn(async () => 'snap'),
-    mergeCheck: vi.fn(async (base: string) => {
-      const files = over.conflicts?.[base.replace(/^origin\//, '')] ?? [];
-      return { clean: files.length === 0, conflicts: files };
-    }),
-  };
+const fixtures: Fixture[] = [];
+afterEach(() => {
+  while (fixtures.length) fixtures.pop()?.cleanup();
+});
 
-  const gh: GitHubLike = {
-    version: async () => 'gh version 2.80.0',
-    authStatus: async () => ({ ok: true, detail: 'Logged in' }),
-    findOpenPr: vi.fn(async (_repo: string, _branch: string, base?: string) => state.prs.find((p) => !base || p.baseRefName === base) ?? null),
-    createPr: vi.fn(async (input) => {
-      const number = input.base === 'production' ? 1890 : 1886;
-      const url = number === 1886 ? PR_URL : PR_URL.replace('1886', String(number));
-      state.prs.push({ number, url, title: input.title, isDraft: Boolean(input.draft), baseRefName: input.base });
-      return url;
-    }),
-    ensureReviewers: vi.fn(async (_repo: string, n: number, reviewers: readonly string[]) => {
-      const cur = state.reviewersByPr.get(n) ?? [];
-      const toAdd = reviewers.filter((r) => !cur.includes(r));
-      state.reviewersByPr.set(n, [...cur, ...toAdd]);
-      if (!state.reviewers.length || n === 1886) state.reviewers = [...new Set([...state.reviewers, ...toAdd])];
-      return { requested: toAdd, alreadyRequested: reviewers.filter((r) => !toAdd.includes(r)), alreadyReviewed: [], skippedAuthor: [] };
-    }),
-  };
+interface WorldOpts {
+  branch?: string;
+  /** branch asal di remote (default production) */
+  from?: string;
+  /** tanpa commit tiket awal */
+  empty?: boolean;
+  /** tanpa perubahan README yang belum di-commit */
+  clean?: boolean;
+  status?: string;
+  tamperExtraCommit?: string;
+  config?: Partial<Config>;
+}
 
-  const fakeJira = fakeJiraWorkflow(over.status ?? 'In Progress', { workflow: over.workflow });
-  const client = new JiraClient({ baseUrl: 'https://x.atlassian.net', email: 'e', apiToken: 't' }, fakeJira.fetchImpl);
-  const jira: JiraLike = {
-    getIssue: async (key) => ({ ...(await client.getIssue(key)), key, summary: SUMMARY }),
-    moveToStatus: vi.fn((key: string, target: string, o?: Parameters<JiraLike['moveToStatus']>[2]) => client.moveToStatus(key, target, o)),
+function world(o: WorldOpts = {}) {
+  const fx = makeFixture();
+  fixtures.push(fx);
+  const branch = o.branch ?? BRANCH;
+  fx.g('switch', '-q', '-c', branch, `origin/${o.from ?? 'production'}`);
+  if (!o.empty) fx.commit('LOGIS-3938: commit lama', { 't1.ts': 'satu\n' });
+  if (!o.clean) fx.write('README.md', '# svc\nubah\n');
+  const github = fakeGitHub(fx, { tamperExtraCommit: o.tamperExtraCommit });
+  const jfake = fakeJiraWorkflow(o.status ?? 'In Progress');
+  const client = new JiraClient({ baseUrl: 'https://serasiautoraya.atlassian.net', email: 'e', apiToken: 't' }, jfake.fetchImpl);
+  const state = { teams: [] as TeamsPayload[], copied: [] as string[], notified: new Map<string, string>() };
+  const jira = {
+    getIssue: async (key: string) => ({ ...(await client.getIssue(key)), key, summary: SUMMARY }),
+    moveToStatus: vi.fn((key: string, target: string, opt?: Parameters<JiraClient['moveToStatus']>[2]) =>
+      client.moveToStatus(key, target, opt),
+    ),
   };
-  const jstate = fakeJira.state;
-
+  const git = new Git(runCommand, fx.work);
   const log = createMemoryLogger();
   const deps = (extra: Partial<RunDeps> = {}): RunDeps => ({
-    config,
+    config: { ...config, ...o.config },
     git,
-    gh,
+    gh: github.gh,
     jira,
     sendTeams: async (p) => {
       state.teams.push(p);
     },
-    confirm: async (_q, defaultYes) => defaultYes, // = pengguna menekan Enter
-    choose: async (_q, _choices, defaultValue) => defaultValue,
+    // Enter = default, kecuali konfirmasi allowlist commit (developer menjawab "y").
+    confirm: async (q, d) => (q.includes('memang milik') ? true : d),
+    choose: async (_q, _c, d) => d,
     notified: {
       sentAt: async (url) => state.notified.get(url) ?? null,
       markSent: async (url) => {
-        state.notified.set(url, '31 Okt 2026 22.40');
+        state.notified.set(url, '2 Nov 2026 10.00');
       },
     },
     copy: async (t) => {
@@ -143,453 +92,459 @@ function createWorld(
     log,
     symbols: ASCII_SYMBOLS,
     interactive: true,
-    printResult: (l) => state.stdout.push(l),
+    printResult: () => undefined,
     ...extra,
   });
-  return { state, jstate, git, gh, jira, log, deps };
+  const fails = () => log.lines.filter((l) => l.startsWith('fail:')).join('\n');
+  return { fx, git, github, jfake, jira, log, deps, state, fails, branch };
+}
+type World = ReturnType<typeof world>;
+
+const baseOpts: RunOptions = { message: 'tambah enrichment', jira: true, teams: true, yes: true };
+const devRange = (fx: Fixture, ref = `origin/${DEV}`) =>
+  fx.g('log', '--format=%s', `origin/production..${ref}`).split('\n').filter(Boolean);
+const changed = (fx: Fixture, ref = 'HEAD') => fx.g('show', '--name-only', '--format=', ref).split('\n').filter(Boolean).sort();
+const wtDirs = () => readdirSync(os.tmpdir()).filter((d) => d.startsWith('logis-pr-wt-')).length;
+
+/** Harus berhenti dengan CliError dan TIDAK ada efek samping eksternal sama sekali. */
+async function expectBlocked(w: World, opts: RunOptions, re: RegExp, exitCode = 1): Promise<CliError> {
+  const before = w.fx.remoteRefs();
+  const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(CliError);
+  expect((err as CliError).message).toMatch(re);
+  expect((err as CliError).exitCode).toBe(exitCode);
+  expect(w.fx.remoteRefs()).toBe(before); // tidak ada push
+  expect(w.github.prs).toHaveLength(0);
+  expect(w.jfake.state.posts).toBe(0);
+  expect(w.state.teams).toHaveLength(0);
+  return err as CliError;
 }
 
-const baseOpts: RunOptions = { message: 'tambah enrichment', jira: true, teams: true };
+/** Commit di branch tiket tanpa mengganggu perubahan README yang belum di-commit. */
+function withStash(w: World, fn: () => void) {
+  w.fx.g('stash', '-q');
+  fn();
+  w.fx.g('stash', 'pop', '-q');
+}
 
-describe('runPr — alur lengkap', () => {
-  it('commit+push → PR baru → Jira Code Review → Teams → link tercetak & ter-copy', async () => {
-    const w = createWorld();
+describe('alur utama: branch tiket dari production → LOGIS-XXXX-dev → development', () => {
+  it('membuat -dev dari production berisi cherry-pick -x commit tiket saja, lalu PR -dev → development', async () => {
+    const w = world();
+    const oldCommit = w.fx.g('rev-parse', 'HEAD');
     const res = await runPr(baseOpts, w.deps());
 
-    expect(w.state.commits).toEqual(['LOGIS-3938: tambah enrichment']);
-    expect(w.state.pushes).toBe(1);
-    expect(w.gh.createPr).toHaveBeenCalledWith(
-      expect.objectContaining({ repo: REPO, base: 'development', head: 'feature/LOGIS-3938-bulk-last-route', title: 'LOGIS-3938: tambah enrichment' }),
-    );
-    expect(res).toMatchObject({ prUrl: PR_URL, prCreated: true, committed: true, jira: 'moved', teams: 'sent' });
-    expect(w.jstate.status).toBe('Code Review');
-    expect(w.state.teams[0]?.text).toBe(
-      [
-        'Task: Review PR LOGIS-3938',
-        `Desc: ${SUMMARY} in [ServiceOrder]`,
-        '',
-        `PR: ${PR_URL}`,
-        'Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3938',
-      ].join('\n'),
-    );
-    expect(w.state.teams[0]?.html).toContain(`<a href="${PR_URL}">${PR_URL}</a>`);
-    expect(w.state.copied).toEqual([PR_URL]);
-    expect(w.state.stdout).toEqual([PR_URL]);
+    expect(res.prs).toEqual([expect.objectContaining({ base: 'development', head: DEV, created: true })]);
+    expect(devRange(w.fx)).toEqual(['LOGIS-3938: tambah enrichment', 'LOGIS-3938: commit lama']);
+    expect(w.fx.g('log', '-1', '--format=%B', `origin/${DEV}~1`)).toContain(`(cherry picked from commit ${oldCommit})`);
+    // Isi PR versi GitHub (dihitung di repo bare): 2 commit tiket, 2 file tiket.
+    expect(w.fx.b('rev-list', '--count', `refs/heads/${DEV}`, '^refs/heads/development')).toBe('2');
+    expect(w.fx.b('diff', '--name-only', `refs/heads/development...refs/heads/${DEV}`).split('\n').sort()).toEqual(['README.md', 't1.ts']);
+    // Branch tiket tetap production + commit tiket; tetap checkout di branch tiket; tidak ada worktree sisa.
+    expect(w.fx.g('rev-list', '--count', 'HEAD', '^origin/production')).toBe('2');
+    expect(w.fx.g('rev-list', '--count', 'origin/development', '^HEAD', '^origin/production')).toBe('3');
+    expect(w.fx.g('symbolic-ref', '--short', 'HEAD')).toBe(BRANCH);
+    expect(w.fx.g('worktree', 'list').split('\n')).toHaveLength(1);
+    expect(res.jira).toBe('moved');
+    expect(w.state.teams[0]?.text).toContain(`PR: https://github.com/${REPO}/pull/901`);
+    expect(w.log.lines).toContain('ok: Isi PR di GitHub cocok dengan validasi lokal.');
   });
 
-  it('menjalankan ulang TIDAK membuat PR atau transisi duplikat', async () => {
-    const w = createWorld();
+  it('dijalankan ulang: tidak ada cherry-pick ganda, -dev tidak berubah, PR/Jira/Teams tidak dobel', async () => {
+    const w = world();
     await runPr(baseOpts, w.deps());
-    const second = await runPr(baseOpts, w.deps());
-
-    expect(w.gh.createPr).toHaveBeenCalledTimes(1);
-    expect(w.jstate.posts).toBe(1);
-    expect(w.state.commits).toHaveLength(1); // tree sudah bersih → tidak commit lagi
-    expect(second).toMatchObject({ prUrl: PR_URL, prCreated: false, committed: false, jira: 'already', teams: 'already-sent' });
-    expect(w.state.teams).toHaveLength(1); // tidak spam grup Teams
-    expect(w.log.lines.some((l) => l.includes('pesan -m diabaikan'))).toBe(true);
-  });
-
-  it('run ulang interaktif tanpa -y menanyakan kirim ulang dengan default Tidak', async () => {
-    const w = createWorld();
-    await runPr({ ...baseOpts, yes: true }, w.deps());
-    const confirm = vi.fn(async (_q: string, _d: boolean) => true);
-    const res = await runPr(baseOpts, w.deps({ confirm }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('ULANG'), false);
-    expect(res.teams).toBe('sent');
-    expect(w.state.teams).toHaveLength(2);
-  });
-
-  it('working tree bersih tanpa -m → langsung push, judul PR dari commit terakhir', async () => {
-    const w = createWorld({ dirty: false });
-    await runPr({ jira: true, teams: true }, w.deps());
-    expect(w.git.commitStaged).not.toHaveBeenCalled();
-    expect(w.state.pushes).toBe(1);
-    expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ title: 'LOGIS-3938: commit lama' }));
-  });
-
-  it('format commit tim (ver/tkt/msg) dipakai apa adanya untuk commit & judul PR', async () => {
-    const w = createWorld();
-    const msg = 'ver:1.0.0 tkt:LOGIS-3938 msg:add logis-pr guide';
-    await runPr({ ...baseOpts, message: msg }, w.deps());
-    expect(w.state.commits).toEqual([msg]);
-    expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ title: msg }));
-  });
-
-  it('opsi -b, -d, -t diteruskan', async () => {
-    const w = createWorld({ branch: 'feature/no-key', remoteBranches: ['production', 'development', 'staging'] });
-    const res = await runPr({ ...baseOpts, base: 'staging', draft: true, ticket: '4001' }, w.deps());
-    expect(res.ticketKey).toBe('LOGIS-4001');
-    expect(w.gh.createPr).toHaveBeenCalledWith(expect.objectContaining({ base: 'staging', draft: true }));
-  });
-});
-
-describe('runPr — alur branch production / development', () => {
-  const opts = { ...baseOpts, yes: true };
-  const noSideEffects = (w: ReturnType<typeof createWorld>) => {
-    expect(w.git.commitStaged).not.toHaveBeenCalled();
-    expect(w.git.push).not.toHaveBeenCalled();
-    expect(w.gh.createPr).not.toHaveBeenCalled();
-    expect(w.jstate.posts).toBe(0);
-    expect(w.state.teams).toHaveLength(0);
-  };
-
-  it('fitur: fetch production & development, cek konflik ke development, PR ke development', async () => {
-    const w = createWorld();
-    const res = await runPr(opts, w.deps());
-    expect(w.git.fetch).toHaveBeenCalledWith(['production', 'development']);
-    expect(w.git.mergeCheck).toHaveBeenCalledWith('origin/development', 'snap');
-    expect(res.bases).toEqual(['development']);
-    expect(w.log.lines.some((l) => l.includes("Branch berasal dari 'production'"))).toBe(true);
-  });
-
-  it('branch membawa commit development → berhenti dengan warning besar, tanpa efek samping', async () => {
-    const w = createWorld({
-      branchCommits: [{ sha: 'f1', line: 'f1 fitur' }, { sha: 'd1', line: 'd1 fitur orang lain di dev' }],
-      devOnly: [{ sha: 'd1', line: 'd1 fitur orang lain di dev' }],
-    });
-    await expect(runPr(opts, w.deps())).rejects.toThrow(/harus dibuat dari production/);
-    const fails = w.log.lines.filter((l) => l.startsWith('fail:')).join('\n');
-    expect(fails).toMatch(/BRANCH TIDAK DIBUAT DARI 'production'/);
-    expect(fails).toMatch(/d1 fitur orang lain di dev/);
-    noSideEffects(w);
-  });
-
-  it('konflik ke development → berhenti SEBELUM commit/push/PR, exit code 2', async () => {
-    const w = createWorld({ conflicts: { development: ['src/app.ts', 'README.md'] } });
-    const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
-    expect((err as CliError).message).toMatch(/konflik/);
-    expect((err as CliError).exitCode).toBe(2);
-    const fails = w.log.lines.filter((l) => l.startsWith('fail:')).join('\n');
-    expect(fails).toMatch(/KONFLIK — PROSES DIHENTIKAN/);
-    expect(fails).toMatch(/src\/app\.ts/);
-    noSideEffects(w);
-  });
-
-  it('dry-run juga mendeteksi konflik', async () => {
-    const w = createWorld({ conflicts: { development: ['a.ts'] } });
-    await expect(runPr({ ...baseOpts, dryRun: true }, w.deps())).rejects.toThrow(/konflik/);
-  });
-
-  it('cek konflik memakai perubahan yang akan di-commit (snapshot), bukan HEAD lama', async () => {
-    const w = createWorld();
-    await runPr(opts, w.deps());
-    expect(w.git.snapshotCommit).toHaveBeenCalledWith(expect.objectContaining({ files: ['src/a.ts'] }));
-  });
-
-  it('production punya commit yang belum ada di development → warning', async () => {
-    const w = createWorld({ unsynced: [{ sha: 'h1', line: 'h1 hotfix lama' }] });
-    await runPr(opts, w.deps());
-    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('belum ada di \'development\''))).toBe(true);
-  });
-
-  it('origin/production tidak ada → berhenti dengan saran', async () => {
-    const w = createWorld({ remoteBranches: ['development'] });
-    const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
-    expect((err as CliError).message).toMatch(/'production' tidak ada di remote/);
-    expect((err as CliError).hint).toMatch(/LOGIS_PR_PRODUCTION_BRANCH/);
-  });
-
-  it('hotfix: default 2 PR (production & development), satu transisi Jira, satu pesan Teams berisi 2 link', async () => {
-    const w = createWorld({ branch: 'hotfix/LOGIS-3938-null-driver' });
-    const res = await runPr(opts, w.deps());
-    expect(res.bases).toEqual(['production', 'development']);
-    expect(res.prs.map((p) => p.base)).toEqual(['production', 'development']);
-    expect(w.git.mergeCheck).toHaveBeenCalledTimes(2);
-    expect(w.jstate.posts).toBe(1);
-    expect(w.state.teams).toHaveLength(1);
-    expect(w.state.teams[0]?.text).toBe(
-      [
-        'Task: Review PR LOGIS-3938',
-        `Desc: ${SUMMARY} in [ServiceOrder]`,
-        '',
-        `PR (production): ${PR_URL.replace('1886', '1890')}`,
-        `PR (development): ${PR_URL}`,
-        'Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3938',
-      ].join('\n'),
-    );
-    expect(w.state.reviewersByPr.get(1890)).toEqual(['firdausnp']);
-    expect(w.state.reviewersByPr.get(1886)).toEqual(['firdausnp']);
-    expect(w.state.stdout).toHaveLength(2);
-  });
-
-  it('hotfix interaktif: pilihan "production saja"', async () => {
-    const w = createWorld({ branch: 'hotfix/LOGIS-3938-x' });
-    const choose = vi.fn(async () => 'production' as never);
-    const res = await runPr(baseOpts, w.deps({ choose }));
-    expect(choose).toHaveBeenCalledWith(
-      expect.stringContaining('hotfix'),
-      [
-        { name: 'production dan development', value: 'both' },
-        { name: 'production saja', value: 'production' },
-        { name: 'development saja', value: 'development' },
-      ],
-      'both',
-    );
-    expect(res.bases).toEqual(['production']);
-    expect(w.git.mergeCheck).toHaveBeenCalledTimes(1);
-  });
-
-  it('hotfix konflik hanya ke development → berhenti, saran PR ke production saja', async () => {
-    const w = createWorld({ branch: 'hotfix/LOGIS-3938-x', conflicts: { development: ['src/x.ts'] } });
-    const err = await runPr(opts, w.deps()).catch((e: unknown) => e);
-    expect((err as CliError).hint).toMatch(/production saja/);
-    noSideEffects(w);
-  });
-
-  it('hotfix dijalankan ulang → kedua PR dipakai ulang, Teams tidak dobel', async () => {
-    const w = createWorld({ branch: 'hotfix/LOGIS-3938-x' });
-    await runPr(opts, w.deps());
-    const again = await runPr(opts, w.deps());
-    expect(w.gh.createPr).toHaveBeenCalledTimes(2);
+    const devSha = w.fx.b('rev-parse', `refs/heads/${DEV}`);
+    const again = await runPr({ ...baseOpts, message: undefined }, w.deps());
+    expect(w.fx.b('rev-parse', `refs/heads/${DEV}`)).toBe(devSha);
     expect(again.prCreated).toBe(false);
     expect(again.teams).toBe('already-sent');
+    expect(again.jira).toBe('already');
+    expect(w.github.prs).toHaveLength(1);
+    expect(w.log.lines.some((l) => l.includes('0 commit di-cherry-pick, 2 sudah ada'))).toBe(true);
   });
 
-  it('-b production,development memaksa dua target untuk branch apa pun', async () => {
-    const w = createWorld();
-    const res = await runPr({ ...opts, base: 'production,development' }, w.deps());
-    expect(res.bases).toEqual(['production', 'development']);
-  });
-});
-
-describe('runPr — Jira bertahap & reviewer', () => {
-  it('tiket To Do → In Progress → Code Review, dicatat per langkah', async () => {
-    const w = createWorld({ status: 'To Do' });
-    const res = await runPr({ ...baseOpts, yes: true }, w.deps());
-    expect(res.jira).toBe('moved');
-    expect(w.jstate.history).toEqual(['To Do → In Progress', 'In Progress → Code Review']);
-    const moved = w.log.lines.filter((l) => l.startsWith('ok: Tiket dipindah'));
-    expect(moved).toHaveLength(2);
+  it('commit tiket baru setelah PR ada → -dev maju fast-forward dengan tepat 1 cherry-pick', async () => {
+    const w = world();
+    await runPr(baseOpts, w.deps());
+    const old = w.fx.b('rev-parse', `refs/heads/${DEV}`);
+    w.fx.write('t2.ts', 'dua\n');
+    w.fx.g('add', 't2.ts');
+    const res = await runPr({ ...baseOpts, message: 'tambah t2' }, w.deps());
+    expect(res.prCreated).toBe(false);
+    expect(w.fx.b('rev-parse', `refs/heads/${DEV}~1`)).toBe(old);
+    expect(devRange(w.fx)).toEqual(['LOGIS-3938: tambah t2', 'LOGIS-3938: tambah enrichment', 'LOGIS-3938: commit lama']);
   });
 
-  it('dry-run dari To Do: rencana langkah pertama + lanjutan, tanpa POST', async () => {
-    const w = createWorld({ status: 'To Do' });
-    const res = await runPr({ ...baseOpts, dryRun: true }, w.deps());
-    expect(res.jira).toBe('planned');
-    expect(w.jstate.posts).toBe(0);
-    const all = w.log.lines.join('\n');
-    expect(all).toMatch(/Akan memindahkan tiket 'To Do' → 'In Progress'/);
-    expect(all).toMatch(/Lalu lanjut bertahap ke: Code Review/);
-    expect(all).toMatch(/Akan meminta review dari: firdausnp/);
-    expect(w.gh.ensureReviewers).not.toHaveBeenCalled();
+  it('format commit tim (ver/tkt/msg) dipakai apa adanya', async () => {
+    const w = world();
+    const msg = 'ver:1.0.0 tkt:LOGIS-3938 msg:add guide';
+    await runPr({ ...baseOpts, message: msg }, w.deps());
+    expect(w.fx.g('log', '-1', '--format=%s')).toBe(msg);
+    expect(w.github.prs[0]?.title).toBe(msg);
   });
 
-  it('reviewer default firdausnp diminta di PR baru, run ulang tidak minta ulang', async () => {
-    const w = createWorld();
-    const r1 = await runPr({ ...baseOpts, yes: true }, w.deps());
-    expect(w.gh.ensureReviewers).toHaveBeenCalledWith('developerserasiautoraya/SELOG_LOGIS_ServiceOrder', 1886, ['firdausnp']);
-    expect(r1.reviewers).toBe('requested');
-    const r2 = await runPr({ ...baseOpts, yes: true }, w.deps());
-    expect(r2.reviewers).toBe('already');
-    expect(w.state.reviewers).toEqual(['firdausnp']);
+  it('konfirmasi daftar commit ditolak → tidak ada commit, branch, push, maupun PR', async () => {
+    const w = world();
+    const before = localState(w.fx);
+    const err = await runPr(
+      { ...baseOpts, yes: false },
+      w.deps({ confirm: async (q, d) => (q.includes('memang milik') ? false : d) }),
+    ).catch((e: unknown) => e);
+    expect((err as CliError).message).toMatch(/tidak dikonfirmasi/);
+    expect(localState(w.fx)).toBe(before);
+    expect(w.github.prs).toHaveLength(0);
   });
 
-  it('-r meng-override config; -r none mematikan', async () => {
-    const w = createWorld();
-    await runPr({ ...baseOpts, yes: true, reviewers: '@a, b' }, w.deps());
-    expect(w.gh.ensureReviewers).toHaveBeenLastCalledWith(expect.any(String), 1886, ['a', 'b']);
-    const w2 = createWorld();
-    const res = await runPr({ ...baseOpts, yes: true, reviewers: 'none' }, w2.deps());
-    expect(w2.gh.ensureReviewers).not.toHaveBeenCalled();
-    expect(res.reviewers).toBe('skipped');
-  });
-
-  it('gagal minta review → warning, Jira & Teams tetap jalan', async () => {
-    const w = createWorld();
-    w.gh.ensureReviewers = async () => {
-      throw new CliError('Gagal meminta review dari firdausnp', { hint: 'akses repo' });
-    };
-    const res = await runPr({ ...baseOpts, yes: true }, w.deps());
-    expect(res).toMatchObject({ reviewers: 'failed', jira: 'moved', teams: 'sent' });
+  it('commit tiket yang sudah masuk development (lewat -dev lama) tidak dianggap pencemaran dan tidak di-pick ulang', async () => {
+    const w = world();
+    await runPr(baseOpts, w.deps());
+    // PR -dev di-merge ke development; -dev dihapus di remote & lokal.
+    w.fx.s('fetch', '-q', 'origin');
+    w.fx.s('switch', '-q', 'development');
+    w.fx.s('merge', '-q', '--no-ff', '-m', 'Merge PR', `origin/${DEV}`);
+    w.fx.s('push', '-q', 'origin', 'development', `:${DEV}`);
+    w.fx.g('fetch', '-q', '--prune', 'origin');
+    w.fx.g('branch', '-q', '-D', DEV);
+    w.github.prs.length = 0;
+    w.fx.write('t3.ts', 'tiga\n');
+    w.fx.g('add', 't3.ts');
+    await runPr({ ...baseOpts, message: 'tambah t3' }, w.deps());
+    expect(devRange(w.fx)).toEqual(['LOGIS-3938: tambah t3']);
+    expect(w.fx.b('diff', '--name-only', `refs/heads/development...refs/heads/${DEV}`)).toBe('t3.ts');
   });
 });
 
-describe('runPr — file yang ikut commit (tanpa git add --all)', () => {
-  const opts = { ...baseOpts, yes: true };
-
-  it('default: hanya file terlacak; file baru ditanya dengan default Tidak', async () => {
-    const w = createWorld();
-    const confirm = vi.fn(async (_q: string, d: boolean) => d);
-    await runPr(baseOpts, w.deps({ confirm }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Ikutkan 1 file baru'), false);
-    expect(w.state.committedFiles).toEqual([['src/a.ts']]);
-    expect(w.git.stagePaths).not.toHaveBeenCalled();
-    expect(w.state.wt.untracked).toEqual(['src/b.ts']);
+describe('REGRESI PR TERCEMAR — harus berhenti sebelum push/PR', () => {
+  it('branch tiket dibuat dari development', async () => {
+    const w = world({ from: 'development' });
+    await expectBlocked(w, baseOpts, /bukan milik tiket/);
+    expect(w.fails()).toMatch(/Commit milik 'development'/);
+    expect(w.fx.g('rev-list', '--count', 'HEAD', '^origin/development')).toBe('1'); // belum ada commit baru
   });
 
-  it('jawab y → file baru ikut', async () => {
-    const w = createWorld();
-    await runPr(baseOpts, w.deps({ confirm: async () => true }));
-    expect(w.state.committedFiles).toEqual([['src/a.ts', 'src/b.ts']]);
+  it('development di-merge ke branch tiket', async () => {
+    const w = world();
+    withStash(w, () => w.fx.g('merge', '-q', '--no-edit', 'origin/development'));
+    await expectBlocked(w, baseOpts, /bukan milik tiket/);
+    expect(w.fails()).toMatch(/LOGIS-371: fitur dev 1/);
   });
 
-  it('-a → file baru ikut tanpa ditanya', async () => {
-    const w = createWorld();
-    const confirm = vi.fn(async () => false);
-    await runPr({ ...opts, all: true }, w.deps({ confirm }));
-    expect(confirm).not.toHaveBeenCalled();
-    expect(w.state.committedFiles).toEqual([['src/a.ts', 'src/b.ts']]);
+  it('merge development SEDANG berjalan (MERGE_HEAD) → berhenti, tidak commit, tidak meng-abort', async () => {
+    const w = world({ clean: true });
+    w.fx.g('merge', '--no-ff', '--no-commit', 'origin/development');
+    const head = w.fx.g('rev-parse', 'HEAD');
+    await expectBlocked(w, baseOpts, /merge sedang berjalan/);
+    expect(w.fx.g('rev-parse', 'HEAD')).toBe(head);
+    expect(existsSync(path.join(w.fx.work, '.git', 'MERGE_HEAD'))).toBe(true);
   });
 
-  it('-y tanpa -a → file baru tidak ikut, tanpa ditanya', async () => {
-    const w = createWorld();
-    const confirm = vi.fn(async () => true);
-    await runPr(opts, w.deps({ confirm }));
-    expect(confirm).not.toHaveBeenCalled();
-    expect(w.state.committedFiles).toEqual([['src/a.ts']]);
+  it('commit dari branch tiket lain (LOGIS-3920) di-merge', async () => {
+    const w = world();
+    withStash(w, () => w.fx.g('merge', '-q', '--no-edit', 'origin/LOGIS-3920'));
+    await expectBlocked(w, baseOpts, /bukan milik tiket/);
+    expect(w.fails()).toMatch(/origin\/LOGIS-3920/);
   });
 
-  it('non-interaktif tanpa -a → file baru tidak ikut + warning', async () => {
-    const w = createWorld();
-    await runPr({ ...baseOpts }, w.deps({ interactive: false }));
-    expect(w.state.committedFiles).toEqual([['src/a.ts']]);
-    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('Pakai -a'))).toBe(true);
+  it('commit tiket lain di-cherry-pick (SHA baru, hanya ada di satu branch) → peringatan subject', async () => {
+    const w = world();
+    withStash(w, () => w.fx.g('cherry-pick', 'origin/LOGIS-3920'));
+    // Patch-nya bukan dari env branch & SHA-nya baru → tidak bisa dibuktikan asing; minimal diperingatkan dan
+    // tetap diminta konfirmasi allowlist (di test ini -y). Lihat ADR: sisa risiko.
+    const res = await runPr({ ...baseOpts }, w.deps());
+    expect(res.prs).toHaveLength(1);
+    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('LOGIS-3920'))).toBe(true);
   });
 
-  it('sudah ada file di-stage → hanya itu yang di-commit, tidak ada git add', async () => {
-    const w = createWorld({ wt: { staged: ['README.md'], unstaged: ['src/a.ts'], untracked: ['.DS_Store'] } });
-    const confirm = vi.fn(async () => true);
-    await runPr({ ...opts, all: true }, w.deps({ confirm }));
-    expect(w.git.stageTracked).not.toHaveBeenCalled();
-    expect(w.git.stagePaths).not.toHaveBeenCalled();
-    expect(confirm).not.toHaveBeenCalled();
-    expect(w.state.committedFiles).toEqual([['README.md']]);
+  it('branch tiket dibuat dari staging', async () => {
+    const w = world({ from: 'staging' });
+    await expectBlocked(w, baseOpts, /bukan milik tiket/);
+    expect(w.fails()).toMatch(/Commit milik 'staging'/);
   });
 
-  it('repo git terpisah (folder/) tidak pernah ikut, bahkan dengan -a', async () => {
-    const w = createWorld({ wt: { staged: [], unstaged: ['README.md'], untracked: ['src/shared-libs/', '.DS_Store'] } });
-    await runPr({ ...opts, all: true }, w.deps());
-    expect(w.state.committedFiles).toEqual([['README.md', '.DS_Store']]);
-    expect(w.log.lines.some((l) => l.includes("'src/shared-libs/' adalah repo git terpisah"))).toBe(true);
+  it('commit development di-cherry-pick (SHA beda, patch sama)', async () => {
+    const w = world();
+    withStash(w, () => w.fx.g('cherry-pick', 'origin/development'));
+    await expectBlocked(w, baseOpts, /bukan milik tiket/);
+    expect(w.fails()).toMatch(/Salinan \(cherry-pick\) commit 'development'/);
   });
 
-  it('hanya file baru, ditolak → tidak ada commit, lanjut push & PR', async () => {
-    const w = createWorld({ wt: { staged: [], unstaged: [], untracked: ['notes.txt'] } });
-    const res = await runPr(baseOpts, w.deps({ confirm: async () => false }));
-    expect(w.git.commitStaged).not.toHaveBeenCalled();
-    expect(res.committed).toBe(false);
-    expect(w.state.pushes).toBe(1);
+  it('merge commit yang tidak berasal dari production', async () => {
+    const w = world({ clean: true });
+    w.fx.g('switch', '-q', '-c', 'sub');
+    w.fx.commit('LOGIS-3938: sub', { 'sub.ts': 'x\n' });
+    w.fx.g('switch', '-q', BRANCH);
+    w.fx.g('merge', '-q', '--no-ff', '--no-edit', 'sub');
+    await expectBlocked(w, { ...baseOpts, message: undefined }, /bukan milik tiket/);
+    expect(w.fails()).toMatch(/Merge commit/);
   });
 
-  it('file yang kemungkinan rahasia ditandai', async () => {
-    const w = createWorld({ wt: { staged: [], unstaged: ['README.md'], untracked: ['.env.local'] } });
-    await runPr(baseOpts, w.deps({ confirm: async () => false }));
-    expect(w.log.lines.some((l) => l.includes('.env.local') && l.includes('rahasia'))).toBe(true);
-  });
-});
-
-describe('runPr — dry-run', () => {
-  it('tidak commit, push, membuat PR, transisi, kirim Teams, atau copy', async () => {
-    const w = createWorld();
-    const sendTeams = vi.fn();
-    const res = await runPr({ ...baseOpts, dryRun: true }, w.deps({ sendTeams }));
-    expect(w.git.commitStaged).not.toHaveBeenCalled();
-    expect(w.git.push).not.toHaveBeenCalled();
-    expect(w.git.stageTracked).not.toHaveBeenCalled();
-    expect(w.git.stagePaths).not.toHaveBeenCalled();
-    expect(w.gh.createPr).not.toHaveBeenCalled();
-    expect(w.jstate.posts).toBe(0);
-    expect(sendTeams).not.toHaveBeenCalled();
-    expect(w.state.copied).toEqual([]);
-    expect(res).toMatchObject({ jira: 'planned', teams: 'planned' });
-    expect(res.message.text).toContain('Task: Review PR LOGIS-3938');
-    expect(w.log.lines.join('\n')).toMatch(/\[dry-run\] Akan commit 1 file: "LOGIS-3938: tambah enrichment"/);
-    expect(w.log.lines.join('\n')).toMatch(/Ada 1 file baru .* default TIDAK ikut/);
-  });
-});
-
-describe('runPr — langkah non-kritis gagal', () => {
-  it('transisi tidak tersedia → warning + daftar transisi, proses lanjut', async () => {
-    const w = createWorld({ status: 'Defect Bugs' });
-    const res = await runPr(baseOpts, w.deps());
-    expect(res.jira).toBe('unavailable');
-    expect(res.teams).toBe('sent');
-    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes("Berhenti di status 'Defect Bugs'"))).toBe(true);
-    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('Transisi yang ada:') && l.includes('In Fixing'))).toBe(true);
-    expect(w.jstate.posts).toBe(0);
+  it('-b production pada branch yang dibuat dari development', async () => {
+    const w = world({ from: 'development' });
+    await expectBlocked(w, { ...baseOpts, base: 'production' }, /bukan milik tiket/);
   });
 
-  it('Teams gagal → warning, pesan dicetak untuk dikirim manual, link PR tetap tercetak', async () => {
-    const w = createWorld();
-    const res = await runPr(
-      baseOpts,
-      w.deps({
-        sendTeams: async () => {
-          throw new CliError('Flow Teams menolak request (403).', { hint: 'Who can trigger = Anyone' });
-        },
-      }),
-    );
-    expect(res.teams).toBe('failed');
-    expect(w.log.lines.some((l) => l.includes('dikirim manual'))).toBe(true);
-    expect(w.state.stdout).toEqual([PR_URL]);
+  it('-dev di remote berisi commit asing (staging di-merge orang lain) → berhenti, -dev tidak disentuh', async () => {
+    const w = world();
+    await runPr(baseOpts, w.deps());
+    w.fx.s('fetch', '-q', 'origin');
+    w.fx.s('switch', '-q', '-c', 'x', `origin/${DEV}`);
+    w.fx.s('merge', '-q', '--no-edit', 'origin/staging');
+    w.fx.s('push', '-q', 'origin', `HEAD:${DEV}`);
+    const tampered = w.fx.b('rev-parse', `refs/heads/${DEV}`);
+    w.github.prs.length = 0;
+    w.state.teams.length = 0;
+    w.jfake.state.posts = 0;
+    await expectBlocked(w, { ...baseOpts, message: undefined }, /branch integrasi 'LOGIS-3938-dev' tidak bersih/i);
+    expect(w.fails()).toMatch(/Merge PR|Merge|staging/);
+    expect(w.fx.b('rev-parse', `refs/heads/${DEV}`)).toBe(tampered);
   });
 
-  it('jawaban "n" di konfirmasi → cancelled', async () => {
-    const w = createWorld();
-    const res = await runPr(baseOpts, w.deps({ confirm: async () => false }));
-    expect(res.teams).toBe('cancelled');
+  it('-dev lokal & remote bercabang → berhenti tanpa menimpa salah satunya', async () => {
+    const w = world();
+    await runPr(baseOpts, w.deps());
+    const localTip = w.fx.g('commit-tree', `${DEV}^{tree}`, '-p', DEV, '-m', 'LOGIS-3938: lokal');
+    w.fx.g('update-ref', `refs/heads/${DEV}`, localTip);
+    w.fx.s('fetch', '-q', 'origin');
+    w.fx.s('switch', '-q', '-c', 'y', `origin/${DEV}`);
+    w.fx.commit('LOGIS-3938: remote', { 'r.ts': 'r\n' }, 'seed');
+    w.fx.s('push', '-q', 'origin', `HEAD:${DEV}`);
+    const remoteTip = w.fx.b('rev-parse', `refs/heads/${DEV}`);
+    w.github.prs.length = 0;
+    w.state.teams.length = 0;
+    w.jfake.state.posts = 0;
+    await expectBlocked(w, { ...baseOpts, message: undefined }, /branch integrasi/);
+    expect(w.fails()).toMatch(/bercabang/);
+    expect(w.fx.g('rev-parse', DEV)).toBe(localTip);
+    expect(w.fx.b('rev-parse', `refs/heads/${DEV}`)).toBe(remoteTip);
+  });
+
+  it('isi PR di GitHub berbeda dari validasi lokal → exit 3 sebelum reviewer/Jira/Teams', async () => {
+    const w = world({ tamperExtraCommit: 'deadbeef'.repeat(5) });
+    const err = await runPr(baseOpts, w.deps()).catch((e: unknown) => e);
+    expect((err as CliError).exitCode).toBe(3);
+    expect(w.fails()).toMatch(/ISI PR DI GITHUB TIDAK SAMA/);
+    expect(w.github.reviewers.size).toBe(0);
+    expect(w.jfake.state.posts).toBe(0);
     expect(w.state.teams).toHaveLength(0);
   });
 
-  it('-y melewati konfirmasi', async () => {
-    const w = createWorld();
-    const confirm = vi.fn(async () => false);
-    const res = await runPr({ ...baseOpts, yes: true }, w.deps({ confirm }));
-    expect(confirm).not.toHaveBeenCalled();
-    expect(res.teams).toBe('sent');
+  it('PR lama langsung dari branch tiket ke development → diperingatkan', async () => {
+    const w = world();
+    withStash(w, () => w.fx.g('push', '-q', 'origin', BRANCH));
+    await w.github.gh.createPr({ repo: REPO, base: 'development', head: BRANCH, title: 'lama', body: '' });
+    await runPr(baseOpts, w.deps());
+    expect(w.log.lines.some((l) => l.startsWith('warn:') && l.includes('PR lama langsung dari branch tiket'))).toBe(true);
+  });
+});
+
+describe('sinkronisasi production, konflik, kegagalan di tengah', () => {
+  it('merge origin/production (sinkron) diizinkan; -dev diputar ulang dengan isi identik branch tiket', async () => {
+    const w = world();
+    w.fx.commit('hotfix prod', { 'p.ts': 'prod\n' }, 'seed');
+    w.fx.s('push', '-q', 'origin', 'production');
+    w.fx.g('fetch', '-q', 'origin');
+    withStash(w, () => w.fx.g('merge', '-q', '--no-edit', 'origin/production'));
+    await runPr(baseOpts, w.deps());
+    expect(w.fx.g('rev-parse', `origin/${DEV}^{tree}`)).toBe(w.fx.g('rev-parse', 'HEAD^{tree}'));
+    expect(w.log.lines.some((l) => l.includes('merge sinkronisasi'))).toBe(true);
   });
 
-  it('non-interaktif tanpa -y → Teams dilewati dengan warning', async () => {
-    const w = createWorld();
-    const res = await runPr(baseOpts, w.deps({ interactive: false }));
-    expect(res.teams).toBe('skipped');
+  it('konflik dengan development → berhenti SEBELUM commit (exit 2), repo lokal tidak berubah', async () => {
+    const w = world();
+    w.fx.s('switch', '-q', 'development');
+    w.fx.commit('LOGIS-3799: ubah app', { 'app.ts': 'a\nDEV\nc\n' }, 'seed');
+    w.fx.s('push', '-q', 'origin', 'development');
+    w.fx.write('app.ts', 'a\nTIKET\nc\n');
+    const before = localState(w.fx);
+    await expectBlocked(w, baseOpts, /konflik/, 2);
+    expect(localState(w.fx)).toBe(before);
+    expect(w.fails()).toMatch(/app\.ts/);
+  });
+
+  it('cherry-pick ke -dev yang sudah ada konflik → exit 2; -dev & branch tiket utuh; worktree sementara dibersihkan', async () => {
+    const w = world({ clean: true });
+    w.fx.s('switch', '-q', 'development');
+    w.fx.commit('LOGIS-3799: ubah app', { 'app.ts': 'a\nDEV\nc\n' }, 'seed');
+    w.fx.s('push', '-q', 'origin', 'development');
+    w.fx.commit('LOGIS-3938: app tiket', { 'app.ts': 'a\nT1\nc\n' });
+    w.fx.g('fetch', '-q', 'origin');
+    // -dev dibuat manual; konflik development diselesaikan developer di -dev (diizinkan).
+    w.fx.g('switch', '-q', '-c', DEV, 'origin/production');
+    w.fx.g('cherry-pick', '-x', `${BRANCH}~1`, BRANCH);
+    try {
+      w.fx.g('merge', '--no-edit', 'origin/development');
+    } catch {
+      w.fx.write('app.ts', 'a\nDEV+T1\nc\n');
+      w.fx.g('add', 'app.ts');
+      w.fx.g('commit', '-q', '--no-edit');
+    }
+    w.fx.g('push', '-q', 'origin', DEV);
+    w.fx.g('switch', '-q', BRANCH);
+    w.fx.write('app.ts', 'a\nT2\nc\n');
+    const devBefore = w.fx.g('rev-parse', DEV);
+    const ticketBefore = w.fx.g('rev-parse', 'HEAD');
+    const tmpBefore = wtDirs();
+    const err = await expectBlocked(w, baseOpts, /cherry-pick ke branch integrasi konflik/, 2);
+    expect(err.hint).toMatch(/git cherry-pick -x/);
+    expect(w.fx.g('rev-parse', DEV)).toBe(devBefore);
+    expect(w.fx.g('rev-parse', 'HEAD')).toBe(ticketBefore);
+    expect(w.fx.g('status', '--porcelain')).toBe('M app.ts');
+    expect(w.fx.g('worktree', 'list').split('\n')).toHaveLength(1);
+    expect(wtDirs()).toBe(tmpBefore);
+  });
+});
+
+describe('hotfix & opsi target', () => {
+  it('hotfix default: hotfix → production & LOGIS-XXXX-dev → development, satu pesan Teams', async () => {
+    const w = world({ branch: 'hotfix/LOGIS-3938-null-driver' });
+    const res = await runPr(baseOpts, w.deps());
+    expect(res.prs.map((p) => `${p.head}→${p.base}`)).toEqual(['hotfix/LOGIS-3938-null-driver→production', `${DEV}→development`]);
+    expect(w.state.teams).toHaveLength(1);
+    expect(w.state.teams[0]?.text).toMatch(/PR \(production\): .*\nPR \(development\): /);
+    expect(w.fx.b('rev-list', '--count', 'refs/heads/hotfix/LOGIS-3938-null-driver', '^refs/heads/production')).toBe('2');
+    expect(w.fx.b('rev-list', '--count', `refs/heads/${DEV}`, '^refs/heads/development')).toBe('2');
+  });
+
+  it('hotfix interaktif "production saja"', async () => {
+    const w = world({ branch: 'hotfix/LOGIS-3938-x' });
+    const res = await runPr({ ...baseOpts, yes: false }, w.deps({ choose: async <T,>() => 'production' as T }));
+    expect(res.prs.map((p) => p.base)).toEqual(['production']);
+    expect(w.fx.remoteRefs()).not.toContain(`refs/heads/${DEV} `);
+  });
+
+  it('-b production pada fitur dari production → PR langsung dari branch tiket', async () => {
+    const w = world();
+    const res = await runPr({ ...baseOpts, base: 'production' }, w.deps());
+    expect(res.prs).toEqual([expect.objectContaining({ head: BRANCH, base: 'production' })]);
+  });
+
+  it('dijalankan dari branch -dev → ditolak', async () => {
+    const w = world({ branch: DEV });
+    await expect(runPr(baseOpts, w.deps())).rejects.toThrow(/branch integrasi/);
+  });
+});
+
+describe('validasi awal & keamanan working tree', () => {
+  it('production tidak ada di remote → berhenti; tidak diganti main/development diam-diam', async () => {
+    const w = world({ config: { productionBranch: 'prod' } });
+    w.fx.s('push', '-q', 'origin', 'production:main');
+    w.fx.g('fetch', '-q', 'origin');
+    const before = localState(w.fx);
+    const err = await expectBlocked(w, baseOpts, /'prod' tidak ada di remote 'origin'/);
+    expect(err.hint).toMatch(/tidak mengganti branch produksi/);
+    expect(localState(w.fx)).toBe(before);
+  });
+
+  it('remote yang dikonfigurasi tidak ada → berhenti', async () => {
+    const w = world({ config: { remote: 'upstream' } });
+    await expect(runPr(baseOpts, w.deps())).rejects.toBeInstanceOf(CliError);
+    expect(w.github.prs).toHaveLength(0);
+  });
+
+  it('ada perubahan tetapi tanpa -m → berhenti tanpa mengubah apa pun', async () => {
+    const w = world();
+    const before = localState(w.fx);
+    await expect(runPr({ ...baseOpts, message: undefined }, w.deps())).rejects.toThrow(/pesan commit tidak diberikan/);
+    expect(localState(w.fx)).toBe(before);
+  });
+
+  it('detached HEAD → berhenti', async () => {
+    const w = world({ clean: true });
+    w.fx.g('switch', '-q', '--detach');
+    await expect(runPr(baseOpts, w.deps())).rejects.toThrow(/detached/);
+  });
+
+  it('dijalankan dari development → ditolak', async () => {
+    const w = world({ clean: true });
+    w.fx.g('switch', '-q', '-c', 'development', 'origin/development');
+    await expect(runPr(baseOpts, w.deps())).rejects.toThrow(/bukan branch tiket/);
+  });
+
+  it('belum ada commit tiket → berhenti', async () => {
+    const w = world({ empty: true, clean: true });
+    await expect(runPr({ ...baseOpts, message: undefined }, w.deps())).rejects.toThrow(/belum punya commit tiket/);
+  });
+});
+
+describe('--dry-run & --audit tidak mengubah repo', () => {
+  it('--dry-run: branch, index, file, worktree, dan remote tidak berubah; rencana ditampilkan', async () => {
+    const w = world();
+    const before = localState(w.fx);
+    const remote = w.fx.remoteRefs();
+    const res = await runPr({ ...baseOpts, dryRun: true }, w.deps());
+    expect(localState(w.fx)).toBe(before);
+    expect(w.fx.remoteRefs()).toBe(remote);
+    expect(res.prs[0]?.head).toBe(DEV);
+    expect(w.log.lines.join('\n')).toMatch(/Akan membuat branch 'LOGIS-3938-dev'/);
+    expect(w.log.lines.join('\n')).toMatch(/\[dry-run\] git fetch/);
+    expect(w.jfake.state.posts).toBe(0);
+    expect(w.state.teams).toHaveLength(0);
+  });
+
+  it('--audit: tanpa fetch & tanpa objek baru; menilai AMAN lalu TIDAK AMAN', async () => {
+    const w = world({ clean: true });
+    await runPr({ ...baseOpts, message: undefined }, w.deps());
+    const state = localState(w.fx);
+    const tracking = () => w.fx.g('for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes');
+    const trackingBefore = tracking();
+    const objects = w.fx.g('count-objects', '-v');
+    const ok = await runAudit({}, { config, git: w.git, gh: w.github.gh, log: createMemoryLogger() });
+    expect(ok).toEqual({ safe: true, issues: [] });
+    expect(localState(w.fx)).toBe(state);
+    expect(tracking()).toBe(trackingBefore);
+    expect(w.fx.g('count-objects', '-v')).toBe(objects);
+
+    w.fx.g('merge', '-q', '--no-edit', 'origin/development');
+    const bad = await runAudit({}, { config, git: w.git, gh: w.github.gh, log: createMemoryLogger() });
+    expect(bad.safe).toBe(false);
+    expect(bad.issues.join('\n')).toMatch(/Branch tiket: \d+ masalah/);
+  });
+});
+
+describe('file yang ikut commit (tidak pernah git add --all)', () => {
+  it('file baru default tidak ikut; -a mengikutkan', async () => {
+    const w = world();
+    w.fx.write('baru.ts', 'baru\n');
+    await runPr(baseOpts, w.deps());
+    expect(changed(w.fx)).toEqual(['README.md']);
+    expect(w.fx.g('status', '--porcelain')).toContain('?? baru.ts');
+
+    const w2 = world();
+    w2.fx.write('baru.ts', 'baru\n');
+    await runPr({ ...baseOpts, all: true }, w2.deps());
+    expect(changed(w2.fx)).toEqual(['README.md', 'baru.ts']);
+  });
+
+  it('bila ada file yang di-stage, hanya file itu yang di-commit', async () => {
+    const w = world();
+    w.fx.write('t1.ts', 'diubah\n');
+    w.fx.g('add', 't1.ts');
+    await runPr(baseOpts, w.deps());
+    expect(changed(w.fx)).toEqual(['t1.ts']);
+    expect(w.fx.g('status', '--porcelain')).toBe('M README.md');
+  });
+});
+
+describe('Jira, reviewer, Teams (non-kritis)', () => {
+  it('Jira To Do → In Progress → Code Review; reviewer firdausnp diminta di PR -dev', async () => {
+    const w = world({ status: 'To Do' });
+    const res = await runPr(baseOpts, w.deps());
+    expect(w.jfake.state.history).toEqual(['To Do → In Progress', 'In Progress → Code Review']);
+    expect(res.reviewers).toBe('requested');
+    expect(w.github.reviewers.get(901)).toEqual(['firdausnp']);
+  });
+
+  it('Teams gagal → warning, pesan dicetak untuk dikirim manual, PR tetap ada', async () => {
+    const w = world();
+    const res = await runPr(baseOpts, w.deps({ sendTeams: async () => Promise.reject(new CliError('Flow 403')) }));
+    expect(res.teams).toBe('failed');
+    expect(res.prs).toHaveLength(1);
+    expect(w.log.lines.some((l) => l.includes('dikirim manual'))).toBe(true);
   });
 
   it('--no-jira & --no-teams', async () => {
-    const w = createWorld();
+    const w = world();
     const res = await runPr({ ...baseOpts, jira: false, teams: false }, w.deps({ sendTeams: null }));
-    expect(w.jira.moveToStatus).not.toHaveBeenCalled();
     expect(res).toMatchObject({ jira: 'skipped', teams: 'skipped' });
-  });
-});
-
-describe('runPr — validasi awal (gagal kritis, tidak ada efek samping)', () => {
-  const cases: Array<[string, (w: ReturnType<typeof createWorld>) => void, RegExp]> = [
-    ['detached HEAD', (w) => (w.state.branch = null), /detached/],
-    ['di branch development', (w) => (w.state.branch = 'development'), /branch utama/],
-    ['di branch production', (w) => (w.state.branch = 'production'), /branch utama/],
-    ['key tiket tidak ada', (w) => (w.state.branch = 'feature/tanpa-key'), /tidak ditemukan di nama branch/],
-    ['gh belum login', (w) => (w.gh.authStatus = async () => ({ ok: false, detail: '' })), /belum login/],
-    ['bukan repo git', (w) => (w.git.isRepo = async () => false), /bukan repository git/],
-    [
-      'tiket tidak bisa diakses di Jira',
-      (w) =>
-        (w.jira.getIssue = async () => {
-          throw new CliError('Tiket LOGIS-3938 tidak ditemukan atau Anda tidak punya akses (404).');
-        }),
-      /tidak punya akses/,
-    ],
-  ];
-
-  it.each(cases)('%s', async (_name, mutate, re) => {
-    const w = createWorld();
-    mutate(w);
-    await expect(runPr(baseOpts, w.deps())).rejects.toThrow(re);
-    expect(w.git.commitStaged).not.toHaveBeenCalled();
-    expect(w.git.push).not.toHaveBeenCalled();
-    expect(w.gh.createPr).not.toHaveBeenCalled();
-  });
-
-  it('ada perubahan tetapi tanpa -m', async () => {
-    const w = createWorld();
-    await expect(runPr({ jira: true, teams: true }, w.deps())).rejects.toThrow(/pesan commit tidak diberikan/);
-  });
-
-  it('config belum lengkap', async () => {
-    const w = createWorld();
-    await expect(runPr(baseOpts, w.deps({ config: { ...config, teamsWebhookUrl: '' } }))).rejects.toThrow(
-      /Config belum lengkap: teamsWebhookUrl/,
-    );
+    expect(w.jira.moveToStatus).not.toHaveBeenCalled();
   });
 });

@@ -141,17 +141,23 @@ export async function runDoctor(log: Logger, opts: { testTeams?: boolean } = {})
       const key = extractTicketKey(branch, cfg.jiraProjectKey);
       return key ? ['ok', `${branch} → ${key}`] : ['warn', `${branch} (key tiket tidak ditemukan)`, 'Pakai -t LOGIS-1234'];
     });
-    await check(`Branch '${cfg.productionBranch}' & '${cfg.baseBranch}' di origin`, async () => {
+    const R = cfg.remote;
+    await check(`Remote ${R}`, async () => {
+      if (!(await git.remotes()).includes(R)) return ['fail', 'tidak ada', `Set remote di config (LOGIS_PR_REMOTE) atau tambahkan: git remote add ${R} <url>`];
+      const r = parseRemoteUrl(await git.remoteUrl(R));
+      if (!r) return ['fail', 'bukan URL GitHub'];
+      return ['ok', `${r.owner}/${r.repo} · Service = ${serviceFromRepo(r.repo, cfg.repoPrefix)}`];
+    });
+    await check(`Branch '${cfg.productionBranch}' & '${cfg.baseBranch}' di ${R}`, async () => {
       const missing: string[] = [];
-      for (const b of [cfg.productionBranch, cfg.baseBranch]) if (!(await git.refExists(`origin/${b}`))) missing.push(b);
+      for (const b of [cfg.productionBranch, cfg.baseBranch]) if (!(await git.refExists(`${R}/${b}`))) missing.push(b);
       return missing.length
         ? ['fail', `tidak ditemukan: ${missing.join(', ')}`, 'Jalankan git fetch, atau set productionBranch/baseBranch yang benar untuk repo ini.']
         : ['ok', 'ada'];
     });
-    await check('Remote origin', async () => {
-      const r = parseRemoteUrl(await git.remoteUrl());
-      if (!r) return ['fail', 'bukan URL GitHub'];
-      return ['ok', `${r.owner}/${r.repo} · Service = ${serviceFromRepo(r.repo, cfg.repoPrefix)}`];
+    await check('Operasi git yang belum selesai', async () => {
+      const ops = await git.inProgressOperations();
+      return ops.length ? ['warn', ops.join(', '), 'Selesaikan/batalkan dulu sebelum menjalankan logis-pr.'] : ['ok', 'tidak ada'];
     });
   }
 

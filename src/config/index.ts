@@ -23,6 +23,12 @@ export interface Config {
   productionBranch: string;
   /** Prefix branch hotfix (dipisah koma) — boleh di-PR ke production dan development. */
   hotfixPrefixes: string;
+  /** Remote GitHub yang dipakai (fetch, push, identitas repo). */
+  remote: string;
+  /** Branch environment selain production (dipisah koma). Commit eksklusifnya tidak boleh ada di branch tiket. */
+  envBranches: string;
+  /** Nama branch integrasi untuk PR ke development. {TICKET} = LOGIS-1234, {BRANCH} = nama branch tiket. */
+  devBranchPattern: string;
   /** Username GitHub reviewer PR (dipisah koma). Kosong = tidak meminta review. */
   prReviewers: string;
   repoPrefix: string;
@@ -46,6 +52,9 @@ export const DEFAULT_CONFIG: Config = {
   baseBranch: 'development',
   productionBranch: 'production',
   hotfixPrefixes: 'hotfix/',
+  remote: 'origin',
+  envBranches: 'staging, development',
+  devBranchPattern: '{TICKET}-dev',
   prReviewers: 'firdausnp',
   repoPrefix: 'SELOG_LOGIS_',
 };
@@ -66,6 +75,9 @@ export const ENV_VARS: Record<ConfigKey, string> = {
   baseBranch: 'LOGIS_PR_BASE_BRANCH',
   productionBranch: 'LOGIS_PR_PRODUCTION_BRANCH',
   hotfixPrefixes: 'LOGIS_PR_HOTFIX_PREFIXES',
+  remote: 'LOGIS_PR_REMOTE',
+  envBranches: 'LOGIS_PR_ENV_BRANCHES',
+  devBranchPattern: 'LOGIS_PR_DEV_BRANCH_PATTERN',
   prReviewers: 'LOGIS_PR_REVIEWERS',
   repoPrefix: 'LOGIS_PR_REPO_PREFIX',
 };
@@ -117,6 +129,9 @@ function normalizeConfig(cfg: Config): Config {
     baseBranch: cfg.baseBranch.trim(),
     productionBranch: cfg.productionBranch.trim(),
     hotfixPrefixes: cfg.hotfixPrefixes.trim(),
+    remote: cfg.remote.trim(),
+    envBranches: cfg.envBranches.trim(),
+    devBranchPattern: cfg.devBranchPattern.trim(),
     prReviewers: cfg.prReviewers.trim(),
     repoPrefix: cfg.repoPrefix.trim(),
     teamsMode,
@@ -199,7 +214,7 @@ export interface Requirements {
 
 /** Daftar field wajib yang masih kosong untuk kebutuhan run saat ini. */
 export function missingFields(cfg: Config, req: Requirements): ConfigKey[] {
-  const required: ConfigKey[] = ['baseBranch', 'productionBranch', 'repoPrefix', 'jiraProjectKey'];
+  const required: ConfigKey[] = ['baseBranch', 'productionBranch', 'remote', 'devBranchPattern', 'repoPrefix', 'jiraProjectKey'];
   if (req.jira) required.push('jiraBaseUrl', 'jiraEmail', 'jiraApiToken', 'jiraReviewStatus');
   if (req.teams) {
     if (cfg.teamsMode === 'graph') required.push('graphTenantId', 'graphClientId', 'graphChatId');

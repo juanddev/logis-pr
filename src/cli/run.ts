@@ -3,13 +3,25 @@ import {
   basesForChoice,
   isEmbeddedRepo,
   isHotfixBranch,
-  leakedDevCommits,
   looksSensitive,
   parseRemoteUrl,
   planCommit,
   type BaseChoice,
   type Git,
 } from '../git/index.js';
+import {
+  analyzeTicket,
+  describeProblems,
+  integrationBranchName,
+  planIntegration,
+  validateIntegrationTip,
+  validatePrDiff,
+  type IntegrationPlan,
+  type IsolationContext,
+  type PrDiffReport,
+  type Problem,
+  type TicketAnalysis,
+} from '../git/isolation.js';
 import { prNumberFromUrl, type GitHub, type PullRequest } from '../github/index.js';
 import type { JiraClient, JiraIssue, TransitionStep } from '../jira/index.js';
 import {
@@ -64,8 +76,25 @@ export type GitLike = Pick<
   | 'commitsBetween'
   | 'snapshotCommit'
   | 'mergeCheck'
+  | 'remotes'
+  | 'inProgressOperations'
+  | 'resolve'
+  | 'isAncestor'
+  | 'revList'
+  | 'commitMeta'
+  | 'patchIds'
+  | 'patchIdsOf'
+  | 'remoteBranchesContaining'
+  | 'filesOfCommit'
+  | 'prDiffFiles'
+  | 'isValidBranchName'
+  | 'fetchOptional'
+  | 'createBranchAt'
+  | 'fastForwardBranch'
+  | 'pushBranch'
+  | 'replayDetached'
 >;
-export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr' | 'ensureReviewers'>;
+export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr' | 'ensureReviewers' | 'prDetails'>;
 export type JiraLike = Pick<JiraClient, 'getIssue' | 'moveToStatus'>;
 
 export interface RunDeps {
@@ -98,6 +127,7 @@ export interface NotifiedStore {
 
 export interface PrResult {
   base: string;
+  head: string;
   url: string;
   number: number | null;
   created: boolean;
@@ -138,8 +168,9 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   const { config, git, gh, log } = deps;
   const dry = Boolean(opts.dryRun);
   if (dry) {
-    log.info('Mode --dry-run: tidak ada commit, push, PR, transisi Jira, maupun pesan Teams.');
-    log.dim('  Hanya pembacaan (git fetch, git status, cek konflik, gh pr list, GET Jira) agar rencana akurat.');
+    log.info('Mode --dry-run: tidak ada commit, branch baru, push, PR, transisi Jira, maupun pesan Teams.');
+    log.dim('  Mutasi git yang tetap terjadi: git fetch (remote-tracking refs) dan objek sementara untuk simulasi');
+    log.dim('  (commit bayangan, cherry-pick di worktree sementara yang langsung dihapus). Branch, index, dan file Anda tidak berubah.');
   }
 
   // ── Validasi awal ────────────────────────────────────────────────────────────
@@ -165,27 +196,47 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     throw new CliError('Folder ini bukan repository git.', { hint: 'Masuk ke folder repo, mis. cd SELOG_LOGIS_ServiceOrder' });
   }
 
+  // F1: commit di tengah merge/cherry-pick/rebase bisa membawa history branch lain ke branch tiket.
+  const ops = await git.inProgressOperations();
+  if (ops.length) {
+    big([
+      `ADA OPERASI GIT YANG BELUM SELESAI: ${ops.join(', ')}`,
+      'Commit sekarang akan ikut menyelesaikan operasi itu dan bisa membawa',
+      'history branch lain (mis. development) ke branch tiket.',
+      'Tidak ada yang diubah.',
+    ]);
+    throw new CliError(`Dihentikan: ${ops.join(', ')} sedang berjalan.`, {
+      hint:
+        'Selesaikan atau batalkan sendiri dulu (git merge --abort / git cherry-pick --abort / git rebase --abort), ' +
+        'periksa git status, lalu jalankan lagi.',
+    });
+  }
+
   const branch = await git.currentBranch();
   if (!branch) {
     throw new CliError('HEAD sedang detached (tidak di branch mana pun).', {
-      hint: 'Checkout branch fitur dulu: git switch feature/LOGIS-1234-deskripsi',
+      hint: 'Checkout branch tiket dulu: git switch LOGIS-1234',
     });
   }
 
+  const R = config.remote;
   const prod = config.productionBranch;
   const dev = config.baseBranch;
-  if ([prod, dev].includes(branch)) {
-    throw new CliError(`Anda sedang berada di branch '${branch}' (branch utama, bukan branch kerja).`, {
-      hint: `Buat branch dari ${prod}: git switch ${prod} && git pull && git switch -c feature/LOGIS-1234-deskripsi`,
+  const envs = [...new Set([...splitList(config.envBranches), dev])].filter((e) => e !== prod);
+  if ([prod, ...envs].includes(branch)) {
+    throw new CliError(`Anda sedang berada di branch '${branch}' (branch utama, bukan branch tiket).`, {
+      hint: `Buat branch tiket dari ${prod}: git switch ${prod} && git pull && git switch -c LOGIS-1234`,
     });
   }
 
-  const remoteUrl = await git.remoteUrl('origin');
+  const remoteUrl = await git.remoteUrl(R);
   const remote = parseRemoteUrl(remoteUrl);
   if (!remote) {
-    throw new CliError(`Remote origin bukan URL GitHub yang dikenali: ${remoteUrl}`);
+    throw new CliError(`Remote '${R}' bukan URL GitHub yang dikenali: ${remoteUrl}`);
   }
   const repoFull = `${remote.owner}/${remote.repo}`;
+  const otherRemotes = (await git.remotes()).filter((r) => r !== R);
+  if (otherRemotes.length) log.dim(`  Remote yang dipakai: ${R} (diabaikan: ${otherRemotes.join(', ')})`);
   const service = serviceFromRepo(remote.repo, config.repoPrefix);
   if (service === remote.repo) {
     log.warn(`Nama repo '${remote.repo}' tidak diawali '${config.repoPrefix}'; Service = nama repo.`);
@@ -199,6 +250,14 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       hint: `Beri manual: logis-pr -t ${config.jiraProjectKey}-1234 ...`,
     });
   }
+
+  const integrationFor = (b: string) => integrationBranchName(config.devBranchPattern, ticketKey, branch, b, dev);
+  if (envs.some((e) => integrationFor(e) === branch)) {
+    throw new CliError(`Branch '${branch}' adalah branch integrasi yang dikelola logis-pr.`, {
+      hint: `Jalankan logis-pr dari branch tiket (mis. ${ticketKey}), bukan dari branch integrasi.`,
+    });
+  }
+
   // Target PR: -b menang; branch hotfix memilih production/development; selain itu development.
   const hotfix = isHotfixBranch(branch, splitList(config.hotfixPrefixes));
   let bases: string[];
@@ -226,7 +285,14 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   if (bases.includes(branch)) {
     throw new CliError(`Branch '${branch}' tidak bisa di-PR ke dirinya sendiri.`);
   }
-  log.ok(`Repo ${repoFull} · branch ${branch} → ${bases.join(' & ')} · tiket ${ticketKey}`);
+  for (const b of bases) {
+    if (b !== prod && !(await git.isValidBranchName(integrationFor(b)))) {
+      throw new CliError(`Nama branch integrasi '${integrationFor(b)}' tidak valid.`, { hint: 'Periksa devBranchPattern di config.' });
+    }
+  }
+  const headFor = (b: string) => (b === prod ? branch : integrationFor(b));
+  log.ok(`Repo ${repoFull} · branch tiket ${branch} · tiket ${ticketKey}`);
+  log.ok(`PR: ${bases.map((b) => `${headFor(b)} → ${b}`).join(', ')}`);
 
   const missing = missingFields(config, { jira: opts.jira, teams: opts.teams });
   if (missing.length > 0) {
@@ -248,47 +314,39 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     });
   }
 
-  // Asal branch: wajib dari production, tidak boleh membawa commit milik development.
-  const fetchList = [...new Set([prod, dev, ...bases])];
-  await git.fetch(fetchList);
-  for (const b of fetchList) {
-    if (!(await git.refExists(`origin/${b}`))) {
-      throw new CliError(`Branch '${b}' tidak ada di remote origin.`, {
+  // ── Fetch (satu-satunya mutasi git saat --dry-run: remote-tracking refs) ──────
+  const required = [...new Set([prod, ...bases])];
+  try {
+    await git.fetch(required, R);
+  } catch {
+    // dicek satu per satu di bawah agar pesannya jelas
+  }
+  for (const b of required) {
+    if (!(await git.refExists(`${R}/${b}`))) {
+      throw new CliError(`Branch '${b}' tidak ada di remote '${R}'.`, {
         hint:
           b === prod
-            ? `Bila branch produksi repo ini bernama lain, set LOGIS_PR_PRODUCTION_BRANCH (mis. main) atau productionBranch di config.`
-            : `Periksa nama base branch (config baseBranch / opsi -b).`,
+            ? `logis-pr tidak mengganti branch produksi secara diam-diam. Set productionBranch (atau LOGIS_PR_PRODUCTION_BRANCH) sesuai repo ini.`
+            : 'Periksa nama branch target (config baseBranch / opsi -b).',
       });
     }
   }
-  const branchCommits = await git.commitsBetween('HEAD', [`origin/${prod}`]);
-  const devOnly = await git.commitsBetween(`origin/${dev}`, [`origin/${prod}`]);
-  const leaked = leakedDevCommits(branchCommits, devOnly);
-  if (leaked.length > 0) {
-    big([
-      `BRANCH TIDAK DIBUAT DARI '${prod}'`,
-      `Branch '${branch}' membawa ${leaked.length} commit yang hanya ada di '${dev}':`,
-      ...leaked.slice(0, 8).map((c) => `  ${c.line}`),
-      ...(leaked.length > 8 ? [`  … dan ${leaked.length - 8} commit lain`] : []),
-      `Bila di-PR, commit-commit itu ikut masuk (dan bisa terbawa ke ${prod}).`,
-    ]);
-    throw new CliError('Dihentikan: branch harus dibuat dari production.', {
-      hint:
-        `Buat ulang branch dari ${prod}, lalu pindahkan commit Anda saja:\n` +
-        `  git switch ${prod} && git pull\n` +
-        `  git switch -c ${branch}-v2\n` +
-        `  git cherry-pick <sha commit Anda>`,
-    });
+  const presentEnvs: string[] = [];
+  for (const e of envs) {
+    if (required.includes(e) || (await git.fetchOptional(e, R))) presentEnvs.push(e);
+    else log.dim(`  Branch '${e}' tidak ada di ${R}; tidak dipakai untuk deteksi commit asing.`);
   }
-  log.ok(`Branch berasal dari '${prod}' (${branchCommits.length} commit di luar ${prod}).`);
-  if (bases.includes(dev)) {
-    const unsynced = await git.commitsBetween(`origin/${prod}`, [`origin/${dev}`]);
-    if (unsynced.length > 0) {
-      log.warn(`'${prod}' punya ${unsynced.length} commit yang belum ada di '${dev}' — ikut masuk ke PR ${dev}:`);
-      for (const c of unsynced.slice(0, 5)) log.dim(`    ${c.line}`);
-      if (unsynced.length > 5) log.dim(`    … dan ${unsynced.length - 5} commit lain`);
-    }
-  }
+  const integrations = bases.filter((b) => b !== prod).map((b) => ({ base: b, name: integrationFor(b) }));
+  for (const i of integrations) await git.fetchOptional(i.name, R);
+  if (dry) log.dim(`  [dry-run] git fetch ${R} ${[...required, ...presentEnvs].filter((v, i, a) => a.indexOf(v) === i).join(' ')} memperbarui remote-tracking refs.`);
+
+  const ctx: IsolationContext = {
+    remote: R,
+    prod,
+    envs: presentEnvs,
+    ticketKey,
+    ownBranches: [branch, ...integrations.map((i) => i.name)],
+  };
 
   const tUrl = buildTicketUrl(config.jiraBaseUrl, ticketKey);
   let issue: JiraIssue | null = null;
@@ -305,8 +363,8 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     log.warn('Kredensial Jira kosong; Desc memakai judul PR.');
   }
 
-  // ── 1. Commit & push ─────────────────────────────────────────────────────────
-  log.step('[1/4] Commit & push');
+  // ── 1. Branch tiket ──────────────────────────────────────────────────────────
+  log.step(`[1/5] Branch tiket ${branch}`);
   let committed = false;
   let commitMessage: string | undefined;
   const wantCommit = Boolean(opts.message?.trim());
@@ -346,96 +404,273 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   }
 
   const plan = planCommit(wt, approvedNew);
-
-  // Cek konflik SEBELUM commit/push/PR, memakai commit bayangan berisi perubahan yang akan di-commit.
-  const willCommit = Boolean(opts.message?.trim()) && plan.files.length > 0;
+  const willCommit = wantCommit && plan.files.length > 0;
+  if (willCommit) commitMessage = ensureCommitPrefix(opts.message ?? '', ticketKey);
+  // Commit bayangan = isi branch tiket SETELAH commit, tanpa menyentuh branch/index/file.
   const snapshot = await git.snapshotCommit(willCommit ? plan : { ...plan, files: [] });
-  const conflicts: Array<{ base: string; files: string[] }> = [];
-  for (const b of bases) {
-    const r = await git.mergeCheck(`origin/${b}`, snapshot);
-    if (!r.clean) conflicts.push({ base: b, files: r.conflicts });
-  }
-  if (conflicts.length > 0) {
-    big([
-      'KONFLIK — PROSES DIHENTIKAN',
-      ...conflicts.flatMap((c) => [
-        `Merge ${branch} → ${c.base} akan konflik di ${c.files.length} file:`,
-        ...c.files.slice(0, 15).map((f) => `  ${f}`),
-        ...(c.files.length > 15 ? [`  … dan ${c.files.length - 15} file lain`] : []),
-      ]),
-      'Tidak ada commit, push, PR, transisi Jira, maupun pesan Teams yang dijalankan.',
-    ]);
-    const devConflict = conflicts.some((c) => c.base === dev) && bases.includes(prod);
-    throw new CliError('Dihentikan karena konflik.', {
-      exitCode: 2,
-      hint: devConflict
-        ? `Konflik ke '${dev}' pada hotfix: kirim PR ke ${prod} saja (pilih "${prod} saja"), lalu buat branch terpisah dari ` +
-          `'${dev}' untuk port perubahan ini (git cherry-pick) dan selesaikan konflik di sana. ` +
-          `Jangan merge '${dev}' ke branch hotfix.`
-        : `Sesuaikan perubahan Anda di file tersebut dengan isi terbaru '${conflicts[0]?.base}' ` +
-          `(lihat: git diff origin/${conflicts[0]?.base}...HEAD -- <file>). Jangan merge '${dev}' ke branch ini ` +
-          `karena branch harus tetap bersih dari ${prod}.`,
+
+  const stopProblems = (title: string, problems: readonly Problem[], hint: string, exitCode = 1): never => {
+    big([title, ...describeProblems(problems), 'Tidak ada push, PR, transisi Jira, maupun pesan Teams yang dijalankan.']);
+    throw new CliError(`Dihentikan: ${title.toLowerCase()}.`, { hint, exitCode });
+  };
+  const ticketHint =
+    `Buat ulang branch tiket dari ${prod} lalu ambil commit Anda saja:\n` +
+    `  git switch ${prod} && git pull\n` +
+    `  git switch -c ${branch}-v2\n` +
+    `  git cherry-pick <sha commit Anda>\n` +
+    `Untuk sinkron dengan ${prod}, merge ${R}/${prod} (bukan ${dev}/staging).`;
+
+  const analyze = async (head: string) => {
+    const t = await analyzeTicket(git, ctx, head);
+    if (t.problems.length) stopProblems('BRANCH TIKET MEMBAWA COMMIT YANG BUKAN MILIK TIKET', t.problems, ticketHint);
+    return t;
+  };
+  let ticket = await analyze(snapshot);
+  for (const w of ticket.warnings) log.warn(w);
+  if (ticket.commits.length === 0) {
+    throw new CliError(`Branch '${branch}' belum punya commit tiket di luar '${prod}'.`, {
+      hint: 'Buat perubahan lalu jalankan dengan -m "pesan commit".',
     });
   }
-  log.ok(`Tidak ada konflik dengan: ${bases.join(', ')}`);
+  log.ok(`Branch tiket berbasis '${prod}', ${ticket.commits.length} commit tiket:`);
+  for (const c of ticket.commits) log.dim(`    ${c.sha === snapshot ? '(commit baru)' : c.short} ${c.sha === snapshot ? firstLine(commitMessage ?? '') : c.subject}`);
+  if (ticket.syncMerges.length) log.dim(`    + ${ticket.syncMerges.length} merge sinkronisasi dari ${prod} (tidak di-cherry-pick)`);
+
+  // ── 2. Branch integrasi & validasi isi PR (simulasi penuh, belum mengubah ref) ──
+  interface Target {
+    base: string;
+    head: string;
+    tip: string;
+    plan: IntegrationPlan | null;
+    report: PrDiffReport;
+  }
+  const prepare = async (t: TicketAnalysis, ticketHead: string, label: string): Promise<Target[]> => {
+    const out: Target[] = [];
+    for (const b of bases) {
+      if (b === prod) {
+        const conflict = await git.mergeCheck(`${R}/${b}`, ticketHead);
+        if (!conflict.clean) await stopConflict(b, branch, conflict.conflicts);
+        const report = await validatePrDiff(git, ctx, t, b, ticketHead);
+        if (report.problems.length) stopProblems(`ISI PR ${branch} → ${b} TIDAK BERSIH`, report.problems, ticketHint);
+        out.push({ base: b, head: branch, tip: ticketHead, plan: null, report });
+        continue;
+      }
+      const name = integrationFor(b);
+      const ip = await planIntegration(git, ctx, t, b, name);
+      if (ip.problems.length) {
+        stopProblems(
+          `BRANCH INTEGRASI '${name}' TIDAK BERSIH`,
+          ip.problems,
+          `logis-pr tidak menimpa/menghapus branch. Periksa isinya: git log --oneline ${R}/${prod}..${name}\n` +
+            `Bila memang salah, ganti nama branch lama (git branch -m ${name} ${name}-old) lalu jalankan lagi.`,
+        );
+      }
+      if (ip.toPick.length === 0 && !ip.existed) {
+        log.info(`${label}Semua commit tiket sudah ada di '${b}' — PR ke ${b} tidak diperlukan.`);
+        continue;
+      }
+      const pick = await git.replayDetached(ip.start, ip.steps);
+      if (!pick.ok) {
+        big([
+          `CHERRY-PICK KE '${name}' KONFLIK`,
+          `Commit ${pick.failedAt.slice(0, 7)} tidak bisa diterapkan di atas ${ip.existed ? name : `titik awal branch tiket di ${prod}`}:`,
+          ...pick.files.slice(0, 15).map((f) => `  ${f}`),
+          'Simulasi dilakukan di worktree sementara; branch tiket & branch integrasi tidak diubah.',
+        ]);
+        throw new CliError('Dihentikan: cherry-pick ke branch integrasi konflik.', {
+          exitCode: 2,
+          hint: ip.existed
+            ? `Branch integrasi sudah berisi perubahan lain. Selesaikan manual: git switch ${name} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}`
+            : `Laporkan ke maintainer logis-pr: commit tiket seharusnya bisa diputar ulang di titik awalnya.`,
+        });
+      }
+      const post = await validateIntegrationTip(git, ctx, t, b, name, pick.sha);
+      if (post.length) stopProblems(`HASIL CHERRY-PICK '${name}' TIDAK BERSIH`, post, 'Laporkan ke maintainer logis-pr.');
+      const conflict = await git.mergeCheck(`${R}/${b}`, pick.sha);
+      if (!conflict.clean) await stopConflict(b, name, conflict.conflicts);
+      const report = await validatePrDiff(git, ctx, t, b, pick.sha);
+      if (report.problems.length) stopProblems(`ISI PR ${name} → ${b} TIDAK BERSIH`, report.problems, ticketHint);
+      out.push({ base: b, head: name, tip: pick.sha, plan: ip, report });
+    }
+    return out;
+  };
+  const stopConflict = async (b: string, head: string, files: string[]): Promise<never> => {
+    const unsynced = b === prod ? [] : await git.commitsBetween(`${R}/${prod}`, [`${R}/${b}`]);
+    big([
+      'KONFLIK — PROSES DIHENTIKAN',
+      `Merge ${head} → ${b} akan konflik di ${files.length} file:`,
+      ...files.slice(0, 15).map((f) => `  ${f}`),
+      ...(files.length > 15 ? [`  … dan ${files.length - 15} file lain`] : []),
+      ...(unsynced.length
+        ? [
+            `Catatan: ${prod} punya ${unsynced.length} commit yang belum ada di ${b} (ikut terbawa sebagai baseline);`,
+            `konflik bisa berasal dari sana, bukan dari commit tiket:`,
+            ...unsynced.slice(0, 5).map((c) => `  ${c.line}`),
+          ]
+        : []),
+      'Tidak ada push, PR, transisi Jira, maupun pesan Teams yang dijalankan.',
+    ]);
+    throw new CliError('Dihentikan karena konflik.', {
+      exitCode: 2,
+      hint:
+        b === prod
+          ? `Sinkronkan branch tiket dengan ${prod} (git merge ${R}/${prod}), selesaikan konflik, lalu jalankan lagi.`
+          : `Konflik khusus '${b}' diselesaikan di branch integrasi, BUKAN di branch tiket:\n` +
+            `  git switch ${integrationFor(b)}   (setelah logis-pr membuatnya, atau buat dari ${R}/${prod})\n` +
+            `  git merge ${R}/${b}   → selesaikan konflik → commit → git switch ${branch}\n` +
+            `Lalu jalankan logis-pr lagi. Branch tiket tetap bersih dari ${b}.` +
+            (unsynced.length ? `\nBila konflik dari commit ${prod} yang belum di-merge balik ke ${b}, minta lead menyinkronkan ${prod} → ${b} dulu.` : ''),
+    });
+  };
+
+  log.step(`[2/5] Validasi isi PR`);
+  let targets = await prepare(ticket, snapshot, dry ? '[dry-run] ' : '');
+  const showTargets = (ts: Target[]) => {
+    for (const t of ts) {
+      const p = t.plan;
+      if (p) {
+        const what = p.existed ? `perbarui '${p.name}'` : `buat '${p.name}' dari ${prod} (titik awal branch tiket)`;
+        log.ok(`${what}: ${p.toPick.length} commit di-cherry-pick, ${p.present.length} sudah ada${p.inBase.length ? `, ${p.inBase.length} sudah ada di ${t.base}` : ''}`);
+      }
+      const r = t.report;
+      log.ok(
+        `PR ${t.head} → ${t.base}: ${r.ticket.length} commit tiket` +
+          `${r.baseline.length ? `, ${r.baseline.length} commit baseline ${prod}` : ''}` +
+          `${r.sync.length ? `, ${r.sync.length} merge sinkronisasi` : ''} · ${r.files.length} file`,
+      );
+      if (r.baseline.length) log.dim(`    Baseline = commit ${prod} yang belum ada di ${t.base}; ikut tampil di PR.`);
+    }
+  };
+  showTargets(targets);
+  if (targets.length === 0) {
+    throw new CliError('Tidak ada PR yang perlu dibuat: semua commit tiket sudah ada di target.', { exitCode: 0 });
+  }
+
+  // Konfirmasi allowlist: developer menyatakan semua commit di atas memang milik tiket.
+  if (!dry && deps.interactive && !opts.yes) {
+    const ok = await deps.confirm(`Semua ${ticket.commits.length} commit tiket di atas memang milik ${ticketKey}?`, false);
+    if (!ok) {
+      throw new CliError('Dibatalkan: daftar commit tidak dikonfirmasi. Tidak ada yang diubah.', {
+        hint: 'Rapikan branch tiket (buat ulang dari production + cherry-pick commit yang benar), lalu jalankan lagi.',
+      });
+    }
+  }
+
+  // ── 3. Commit, update branch integrasi, push, PR ──────────────────────────────
+  log.step(`[3/5] Commit, push & Pull Request`);
   if (!wantCommit) {
     if (newFiles.length > 0) log.info(`${newFiles.length} file baru tidak ikut (tanpa -m tidak ada commit).`);
-    log.ok(hasTrackedChanges ? 'Tidak ada yang di-commit.' : 'Tidak ada perubahan file terlacak, tidak ada yang di-commit.');
   } else if (plan.files.length === 0) {
     log.warn('Tidak ada file yang di-commit — pesan -m diabaikan.');
+  } else if (dry) {
+    log.info(`[dry-run] Akan commit ${plan.files.length} file: "${firstLine(commitMessage ?? '')}"`);
+    listFiles(plan.files);
   } else {
-    commitMessage = ensureCommitPrefix(opts.message ?? '', ticketKey);
     if (plan.mode === 'staged') log.info('Ada file yang sudah di-stage → hanya file tersebut yang di-commit.');
-    if (dry) {
-      log.info(`[dry-run] Akan commit ${plan.files.length} file: "${firstLine(commitMessage)}"`);
-      listFiles(plan.files);
-    } else {
-      if (plan.stageTracked) await git.stageTracked();
-      if (plan.addUntracked.length) await git.stagePaths(plan.addUntracked);
-      await git.commitStaged(commitMessage);
-      committed = true;
-      log.ok(`Commit ${plan.files.length} file: ${firstLine(commitMessage)}`);
-    }
+    if (plan.stageTracked) await git.stageTracked();
+    if (plan.addUntracked.length) await git.stagePaths(plan.addUntracked);
+    await git.commitStaged(commitMessage ?? '');
+    committed = true;
+    log.ok(`Commit ${plan.files.length} file: ${firstLine(commitMessage ?? '')}`);
     const left = plan.left.filter((p) => !isEmbeddedRepo(p));
-    if (left.length && !dry) {
-      log.dim(`    ${left.length} file tidak ikut commit (tetap ada di folder Anda).`);
-    } else if (left.length && dry && plan.mode === 'staged') {
-      log.dim(`    ${left.length} file lain tidak ikut karena hanya file yang di-stage yang di-commit.`);
+    if (left.length) log.dim(`    ${left.length} file tidak ikut commit (tetap ada di folder Anda).`);
+    // F2: validasi ulang pada commit SUNGGUHAN sebelum ada yang di-push.
+    const realHead = (await git.resolve('HEAD')) as string;
+    ticket = await analyzeTicket(git, ctx, realHead);
+    if (ticket.problems.length) {
+      stopProblems(
+        'BRANCH TIKET TIDAK BERSIH SETELAH COMMIT',
+        ticket.problems,
+        `Commit sudah dibuat di lokal tetapi TIDAK di-push. Batalkan bila perlu: git reset --soft HEAD~1`,
+      );
     }
+    targets = await prepare(ticket, realHead, '');
   }
 
   if (dry) {
-    log.info(`[dry-run] Akan menjalankan: git push --set-upstream origin ${branch}`);
+    for (const t of targets) {
+      if (t.plan) {
+        log.info(
+          `[dry-run] Akan ${t.plan.existed ? 'memperbarui' : 'membuat'} branch '${t.plan.name}' ` +
+            `(cherry-pick -x: ${t.plan.toPick.map((c) => (c.sha === snapshot ? 'commit baru' : c.short)).join(', ') || '-'}` +
+            `${t.plan.steps.some((x) => x.kind === 'merge') ? ' + merge sinkronisasi production' : ''}) lalu push`,
+        );
+      }
+    }
+    log.info(`[dry-run] Akan push branch tiket: git push --set-upstream ${R} ${branch}`);
   } else {
-    await git.push(branch);
-    log.ok(`Push ke origin/${branch}`);
+    for (const t of targets) {
+      const p = t.plan;
+      if (!p) continue;
+      if (p.local === null) await git.createBranchAt(p.name, t.tip);
+      else if (p.local !== t.tip) await git.fastForwardBranch(p.name, t.tip, p.local);
+    }
+    await git.push(branch, R);
+    log.ok(`Push ${R}/${branch}`);
+    for (const t of targets) {
+      if (t.plan && t.plan.remote !== t.tip) {
+        await git.pushBranch(t.plan.name, R);
+        log.ok(`Push ${R}/${t.plan.name}`);
+      }
+    }
   }
 
-  // ── 2. Pull Request ──────────────────────────────────────────────────────────
-  log.step(`[2/4] Pull Request → ${bases.join(' & ')}`);
   const subject = commitMessage ? firstLine(commitMessage) : await git.lastCommitSubject();
   let prTitle = subject ? ensureCommitPrefix(subject, ticketKey) : '';
   const body = buildPrBody({ ticketKey, ticketUrl: tUrl, summary: issue?.summary });
   const prs: PrResult[] = [];
-  for (const b of bases) {
-    const existing: PullRequest | null = await gh.findOpenPr(repoFull, branch, b);
+  bases = targets.map((t) => t.base);
+  for (const t of targets) {
+    if (t.plan) {
+      const stale = await gh.findOpenPr(repoFull, branch, t.base);
+      if (stale) log.warn(`Ada PR lama langsung dari branch tiket ke ${t.base} (#${stale.number}). PR yang benar sekarang dari '${t.head}'; tutup PR lama secara manual.`);
+    }
+    const existing: PullRequest | null = await gh.findOpenPr(repoFull, t.head, t.base);
     if (existing) {
-      prs.push({ base: b, url: existing.url, number: existing.number, created: false });
+      prs.push({ base: t.base, head: t.head, url: existing.url, number: existing.number, created: false });
       prTitle = prTitle || existing.title;
-      log.ok(`PR ke ${b} sudah ada, dipakai ulang: #${existing.number} ${existing.title}`);
-      if (opts.draft && !existing.isDraft) log.warn(`PR ke ${b} sudah ada dan bukan draft; --draft diabaikan.`);
+      log.ok(`PR ${t.head} → ${t.base} sudah ada, dipakai ulang: #${existing.number} ${existing.title}`);
+      if (opts.draft && !existing.isDraft) log.warn(`PR ke ${t.base} sudah ada dan bukan draft; --draft diabaikan.`);
       continue;
     }
-    if (!prTitle) throw new CliError('Branch ini belum punya commit.', { hint: 'Buat commit dulu atau pakai -m.' });
     if (dry) {
-      prs.push({ base: b, url: `https://github.com/${repoFull}/pull/<baru-${b}>`, number: null, created: false });
-      log.info(`[dry-run] Akan membuat PR${opts.draft ? ' (draft)' : ''} ${branch} → ${b}`);
+      prs.push({ base: t.base, head: t.head, url: `https://github.com/${repoFull}/pull/<baru-${t.base}>`, number: null, created: false });
+      log.info(`[dry-run] Akan membuat PR${opts.draft ? ' (draft)' : ''} ${t.head} → ${t.base}`);
       log.dim(`    Judul: ${prTitle}`);
     } else {
-      const url = await gh.createPr({ repo: repoFull, base: b, head: branch, title: prTitle, body, draft: opts.draft });
-      prs.push({ base: b, url, number: prNumberFromUrl(url), created: true });
-      log.ok(`PR ke ${b} dibuat: ${url}`);
+      const url = await gh.createPr({ repo: repoFull, base: t.base, head: t.head, title: prTitle, body, draft: opts.draft });
+      prs.push({ base: t.base, head: t.head, url, number: prNumberFromUrl(url), created: true });
+      log.ok(`PR ${t.head} → ${t.base} dibuat: ${url}`);
     }
+  }
+
+  // Verifikasi PR di GitHub harus sama dengan validasi lokal (fail-closed: tidak diumumkan bila beda).
+  if (!dry) {
+    const mismatches: string[] = [];
+    for (const pr of prs) {
+      const t = targets.find((x) => x.base === pr.base);
+      if (!t || !pr.number) continue;
+      const d = await gh.prDetails(repoFull, pr.number);
+      const expectedShas = new Set([...t.report.ticket, ...t.report.baseline, ...t.report.sync].map((m) => m.sha));
+      const tag = `PR #${pr.number} (${pr.head} → ${pr.base})`;
+      if (d.headRefName !== t.head) mismatches.push(`${tag}: head di GitHub '${d.headRefName}'`);
+      if (d.baseRefName !== t.base) mismatches.push(`${tag}: base di GitHub '${d.baseRefName}'`);
+      if (d.headRefOid !== t.tip) mismatches.push(`${tag}: ujung head di GitHub ${d.headRefOid.slice(0, 7)} ≠ lokal ${t.tip.slice(0, 7)}`);
+      if (expectedShas.size <= 100) {
+        const extra = d.commits.filter((c) => !expectedShas.has(c));
+        if (extra.length) mismatches.push(`${tag}: ${extra.length} commit di GitHub tidak ada di validasi lokal (${extra.slice(0, 5).map((c) => c.slice(0, 7)).join(', ')})`);
+        if (d.commits.length !== expectedShas.size) mismatches.push(`${tag}: GitHub ${d.commits.length} commit, lokal ${expectedShas.size}`);
+      }
+      if (d.changedFiles !== t.report.files.length) mismatches.push(`${tag}: GitHub ${d.changedFiles} file, lokal ${t.report.files.length}`);
+    }
+    if (mismatches.length) {
+      big(['ISI PR DI GITHUB TIDAK SAMA DENGAN VALIDASI LOKAL', ...mismatches, 'Reviewer, Jira, dan Teams TIDAK dijalankan.']);
+      throw new CliError('Dihentikan: verifikasi PR di GitHub gagal.', {
+        exitCode: 3,
+        hint: 'Buka PR di GitHub dan periksa tab Commits/Files. Bila salah, ubah ke draft/tutup PR secara manual, lalu jalankan logis-pr --audit.',
+      });
+    }
+    if (prs.length) log.ok('Isi PR di GitHub cocok dengan validasi lokal.');
   }
   const prUrl = prs[0]?.url ?? '';
   const prCreated = prs.some((p) => p.created);
@@ -475,7 +710,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   }
 
   // ── 3. Jira → Code Review ────────────────────────────────────────────────────
-  log.step(`[3/4] Jira → ${config.jiraReviewStatus}`);
+  log.step(`[4/5] Jira → ${config.jiraReviewStatus}`);
   let jiraStep: JiraStep;
   if (!opts.jira || !deps.jira) {
     jiraStep = 'skipped';
@@ -523,7 +758,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   }
 
   // ── 4. Teams ─────────────────────────────────────────────────────────────────
-  log.step(`[4/4] Teams → ${TEAMS_CHAT_NAME}`);
+  log.step(`[5/5] Teams → ${TEAMS_CHAT_NAME}`);
   const summary = issue?.summary?.trim() || stripTicketPrefix(prTitle, ticketKey);
   const desc = buildDesc(summary, service);
   const message = buildTeamsMessage({ ticketKey, desc, prUrl, prs, ticketUrl: tUrl });

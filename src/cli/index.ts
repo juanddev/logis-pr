@@ -13,6 +13,7 @@ import { createLogger, getSymbols } from '../utils/term.js';
 import { VERSION } from '../version.js';
 import { runDoctor } from './doctor.js';
 import { runGraphChats, runGraphLogin } from './graph.js';
+import { runAudit } from './audit.js';
 import { runInit } from './init.js';
 import { choosePrompt, confirmPrompt, isInteractive, isPromptAbort } from './prompt.js';
 import { runPr, type RunOptions } from './run.js';
@@ -29,12 +30,14 @@ Contoh:
   logis-pr -m "wip" -d --no-teams                     PR draft, tanpa pesan Teams
   logis-pr -t LOGIS-3938 -b staging -y                override tiket & base, kirim tanpa konfirmasi
   logis-pr -m "fix null driver"   (di hotfix/...)     PR ke production & development (bisa dipilih)
-  logis-pr --dry-run -m "coba"                        lihat rencana tanpa mengubah apa pun
+  logis-pr --dry-run -m "coba"                        simulasi lengkap tanpa mengubah branch/index/file
+  logis-pr --audit                                    periksa branch & isi PR, hanya membaca
   logis-pr init                                       buat/ubah ~/.logis-pr.json
   logis-pr doctor                                     cek git, gh, config, Jira, Teams
 `;
 
 interface CliOptions {
+  audit?: boolean;
   message?: string;
   ticket?: string;
   base?: string;
@@ -49,6 +52,17 @@ interface CliOptions {
 
 async function commandRun(opts: CliOptions): Promise<void> {
   const { config } = await loadConfig();
+  if (opts.audit) {
+    if (opts.message || opts.dryRun) {
+      throw new CliError('--audit tidak bisa digabung dengan -m atau --dry-run.', { hint: 'Jalankan: logis-pr --audit' });
+    }
+    const gh = new GitHub(runCommand);
+    const auth = await gh.authStatus().catch(() => ({ ok: false, detail: '' }));
+    if (!auth.ok) log.warn('gh belum login: pemeriksaan PR di GitHub dilewati.');
+    const res = await runAudit({ ticket: opts.ticket, base: opts.base }, { config, git: new Git(runCommand), gh: auth.ok ? gh : null, log });
+    process.exitCode = res.safe ? 0 : 1;
+    return;
+  }
   const interactive = isInteractive();
   const runOpts: RunOptions = { ...opts };
   await runPr(runOpts, {
@@ -95,7 +109,8 @@ function buildProgram(): Command {
     .option('-y, --yes', 'lewati konfirmasi: Teams langsung dikirim, file baru tidak ikut (pakai -a)')
     .option('--no-jira', 'jangan pindahkan status tiket di Jira')
     .option('--no-teams', 'jangan kirim pesan ke Teams')
-    .option('--dry-run', 'tampilkan semua yang AKAN dilakukan tanpa commit/push/PR/transisi/pesan')
+    .option('--dry-run', 'simulasi lengkap tanpa commit/branch/push/PR/transisi/pesan (hanya git fetch)')
+    .option('--audit', 'periksa branch tiket, branch integrasi, dan isi PR — hanya membaca, tanpa fetch')
     .showHelpAfterError('(jalankan "logis-pr --help" untuk bantuan)')
     .addHelpText('after', EXAMPLES)
     .action(async (opts: CliOptions) => {
@@ -143,7 +158,7 @@ function handleError(err: unknown): void {
   }
   if (err instanceof CliError) {
     log.fail(err.message);
-    if (err.hint) log.dim(`  Saran: ${err.hint}`);
+    if (err.hint) log.dim(`  Saran: ${err.hint.split('\n').map((l, i) => (i === 0 || l.startsWith('  ') ? l : `  ${l}`)).join('\n')}`);
     process.exitCode = err.exitCode;
     return;
   }
