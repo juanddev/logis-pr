@@ -57,6 +57,8 @@ export interface RunOptions {
   /** false bila --no-teams */
   teams: boolean;
   dryRun?: boolean;
+  /** --push-ticket: push branch tiket walau PR-nya hanya lewat branch integrasi. */
+  pushTicket?: boolean;
 }
 
 export type GitLike = Pick<
@@ -587,6 +589,12 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     targets = await prepare(ticket, realHead, '');
   }
 
+  // Branch tiket hanya di-push bila ada PR darinya (production/hotfix), kecuali diminta. Push yang tidak
+  // perlu memunculkan notice "Compare & pull request" di GitHub dan mengundang PR kedua ke development.
+  const pushTicket = Boolean(opts.pushTicket) || config.pushTicketBranch === 'always' || targets.some((t) => !t.plan);
+  const skipTicketPushNote =
+    `Branch tiket '${branch}' tidak di-push: PR ke ${targets.map((t) => t.base).join(', ')} lewat branch integrasi. ` +
+    `Pakai --push-ticket (atau config pushTicketBranch: always) bila ingin backup di remote.`;
   if (dry) {
     for (const t of targets) {
       if (t.plan) {
@@ -597,7 +605,8 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
         );
       }
     }
-    log.info(`[dry-run] Akan push branch tiket: git push --set-upstream ${R} ${branch}`);
+    if (pushTicket) log.info(`[dry-run] Akan push branch tiket: git push --set-upstream ${R} ${branch}`);
+    else log.dim(`  [dry-run] ${skipTicketPushNote}`);
   } else {
     for (const t of targets) {
       const p = t.plan;
@@ -605,8 +614,12 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       if (p.local === null) await git.createBranchAt(p.name, t.tip);
       else if (p.local !== t.tip) await git.fastForwardBranch(p.name, t.tip, p.local);
     }
-    await git.push(branch, R);
-    log.ok(`Push ${R}/${branch}`);
+    if (pushTicket) {
+      await git.push(branch, R);
+      log.ok(`Push ${R}/${branch}`);
+    } else {
+      log.dim(`  ${skipTicketPushNote}`);
+    }
     for (const t of targets) {
       if (t.plan && t.plan.remote !== t.tip) {
         await git.pushBranch(t.plan.name, R);

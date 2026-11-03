@@ -48,6 +48,7 @@ interface CliOptions {
   jira: boolean;
   teams: boolean;
   dryRun?: boolean;
+  pushTicket?: boolean;
 }
 
 async function commandRun(opts: CliOptions): Promise<void> {
@@ -109,6 +110,7 @@ function buildProgram(): Command {
     .option('-y, --yes', 'lewati konfirmasi: Teams langsung dikirim, file baru tidak ikut (pakai -a)')
     .option('--no-jira', 'jangan pindahkan status tiket di Jira')
     .option('--no-teams', 'jangan kirim pesan ke Teams')
+    .option('--push-ticket', 'push juga branch tiket walau PR-nya hanya lewat LOGIS-XXXX-dev (backup di remote)')
     .option('--dry-run', 'simulasi lengkap tanpa commit/branch/push/PR/transisi/pesan (hanya git fetch)')
     .option('--audit', 'periksa branch tiket, branch integrasi, dan isi PR — hanya membaca, tanpa fetch')
     .showHelpAfterError('(jalankan "logis-pr --help" untuk bantuan)')

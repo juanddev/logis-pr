@@ -10,7 +10,7 @@ menjalankan berurutan:
 
 0. **Validasi isi branch & PR** — branch tiket harus berbasis `production` dan **hanya** berisi commit tiket: commit milik `development`/`staging` (SHA maupun hasil cherry-pick), commit branch tiket lain, merge non-production, atau merge yang sedang berjalan → **berhenti** sebelum ada commit/push/PR. Merge ke setiap target disimulasikan dulu; **konflik = berhenti**. Lihat [Alur branch](#alur-branch-production--logis-xxxx-dev--development).
 1. **Commit** perubahan file yang sudah dilacak git (file baru ditanya dulu, lihat [File yang ikut commit](#file-yang-ikut-commit)) dengan prefix `LOGIS-XXXX: ` otomatis bila key tiket belum ada di pesan (format seperti `ver:1.0.0 tkt:LOGIS-3938 msg:...` dipakai apa adanya). Daftar commit tiket ditampilkan dan dikonfirmasi `[y/N]`.
-2. **Branch integrasi `LOGIS-XXXX-dev`** — dibuat/diperbarui dari `production` dengan `git cherry-pick -x` commit tiket, lalu branch tiket & `-dev` di-push (tanpa force).
+2. **Branch integrasi `LOGIS-XXXX-dev`** — dibuat/diperbarui dari `production` dengan `git cherry-pick -x` commit tiket, lalu `-dev` di-push (tanpa force). Branch tiket hanya di-push bila ada PR darinya (production/hotfix), supaya GitHub tidak memunculkan notice *Compare & pull request* yang mengundang PR kedua.
 3. **Pull Request** via `gh`: `LOGIS-XXXX-dev → development` (branch `hotfix/…`: pilih **production dan development**, production saja, atau development saja; PR ke production langsung dari branch tiket). PR yang sudah ada dipakai ulang. Setelah PR dibuat, **isinya dicek ulang di GitHub** (commit & file harus sama dengan validasi lokal). Review otomatis diminta dari **`firdausnp`** (bisa diubah: `prReviewers` / `-r`).
 4. **Jira → Code Review** via REST API v3, **bertahap** mengikuti workflow bila tidak bisa langsung (mis. `To Do → In Progress → Code Review`). Sudah di Code Review → dilewati. Tidak ada jalur → warning + daftar transisi, proses tetap lanjut. Lihat [Transisi Jira bertahap](#transisi-jira-bertahap).
 5. **Teams** — preview pesan, konfirmasi `[Y/n]`, lalu kirim ke grup chat **Oknum LOGis** dengan format persis:
@@ -128,6 +128,7 @@ Contoh isi:
   "productionBranch": "production",
   "envBranches": "staging, development",
   "devBranchPattern": "{TICKET}-dev",
+  "pushTicketBranch": "auto",
   "remote": "origin",
   "hotfixPrefixes": "hotfix/",
   "prReviewers": "firdausnp",
@@ -154,6 +155,7 @@ Setiap field bisa di-override dengan environment variable (berguna untuk CI atau
 | `productionBranch` | `LOGIS_PR_PRODUCTION_BRANCH` | `production` (tidak pernah diganti diam-diam bila tidak ada) |
 | `envBranches` | `LOGIS_PR_ENV_BRANCHES` | `staging, development` (commit-nya tidak boleh ada di branch tiket) |
 | `devBranchPattern` | `LOGIS_PR_DEV_BRANCH_PATTERN` | `{TICKET}-dev` (nama branch integrasi untuk PR ke development) |
+| `pushTicketBranch` | `LOGIS_PR_PUSH_TICKET_BRANCH` | `auto` (branch tiket di-push hanya bila ada PR darinya) · `always` (selalu di-push sebagai backup) |
 | `remote` | `LOGIS_PR_REMOTE` | `origin` |
 | `hotfixPrefixes` | `LOGIS_PR_HOTFIX_PREFIXES` | `hotfix/` |
 | `prReviewers` | `LOGIS_PR_REVIEWERS` | `firdausnp` (`none` = tanpa reviewer) |
@@ -272,6 +274,7 @@ logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 | `-y, --yes` | lewati semua konfirmasi (termasuk daftar commit tiket): Teams dikirim, file baru **tidak** ikut (pakai `-a` bila perlu) |
 | `--no-jira` | jangan pindahkan status tiket (summary tetap dibaca bila kredensial ada) |
 | `--no-teams` | jangan kirim pesan Teams |
+| `--push-ticket` | push juga branch tiket walau PR-nya hanya lewat `LOGIS-XXXX-dev` (backup di remote; GitHub akan menampilkan notice *Compare & pull request*, abaikan) |
 | `--dry-run` | tampilkan semua yang AKAN dilakukan; tidak commit/branch/push/PR/transisi/pesan (hanya `git fetch`, disebutkan di output) |
 | `--audit` | periksa branch tiket, `-dev`, dan isi PR **tanpa mengubah apa pun** (tanpa fetch); exit 1 bila TIDAK AMAN |
 | `-h, --help` / `-v, --version` | bantuan / versi |
@@ -328,7 +331,7 @@ Validasi
 [3/5] Commit, push & Pull Request
 [i] [dry-run] Akan commit 1 file: "LOGIS-3971: update panduan"
 [i] [dry-run] Akan membuat branch 'LOGIS-3971-dev' (cherry-pick -x: dbc1237, commit baru) lalu push
-[i] [dry-run] Akan push branch tiket: git push --set-upstream origin LOGIS-3971
+  [dry-run] Branch tiket 'LOGIS-3971' tidak di-push: PR ke development lewat branch integrasi. ...
 [i] [dry-run] Akan membuat PR LOGIS-3971-dev → development
 [i] [dry-run] Akan meminta review dari: firdausnp
 
@@ -510,6 +513,9 @@ Catatan pengiriman disimpan di `~/.logis-pr-state.json` (per mesin).
 
 **"ISI PR DI GITHUB TIDAK SAMA DENGAN VALIDASI LOKAL" (exit 3)**
 - Biasanya branch di GitHub berubah di antara validasi dan pembuatan PR (push orang lain). Buka tab Commits/Files di PR, ubah ke draft atau tutup bila salah, lalu `logis-pr --audit`.
+
+**Notice "*feature/LOGIS-… had recent pushes* · Compare & pull request" di GitHub**
+- Muncul bila branch tiket di-push tanpa PR (mis. dengan `--push-ticket`, `pushTicketBranch: always`, atau push manual). **Jangan diklik**: PR ke development sudah ada dari `LOGIS-XXXX-dev`. Notice ini hanya terlihat oleh yang nge-push dan hilang sendiri setelah beberapa waktu. Dengan setelan default (`auto`), logis-pr tidak nge-push branch tiket untuk PR ke development sehingga notice ini tidak muncul.
 
 **"Ada PR lama langsung dari branch tiket ke development"**
 - Sejak v2.0.0, PR ke development berasal dari `LOGIS-XXXX-dev`. Tutup PR lama secara manual.

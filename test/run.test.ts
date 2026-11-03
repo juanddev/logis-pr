@@ -393,6 +393,48 @@ describe('sinkronisasi production, konflik, kegagalan di tengah', () => {
   });
 });
 
+describe('push branch tiket (notice "Compare & pull request" di GitHub)', () => {
+  const hasRemote = (fx: Fixture, b: string) => fx.remoteRefs().includes(`refs/heads/${b} `);
+
+  it('default: PR ke development → hanya -dev yang di-push, branch tiket tidak', async () => {
+    const w = world();
+    await runPr(baseOpts, w.deps());
+    expect(hasRemote(w.fx, DEV)).toBe(true);
+    expect(hasRemote(w.fx, BRANCH)).toBe(false);
+    expect(w.log.lines.some((l) => l.includes(`Branch tiket '${BRANCH}' tidak di-push`))).toBe(true);
+    // dijalankan ulang dengan commit baru: tetap tidak di-push, -dev maju
+    w.fx.write('t2.ts', 'dua\n');
+    w.fx.g('add', 't2.ts');
+    await runPr({ ...baseOpts, message: 'tambah t2' }, w.deps());
+    expect(hasRemote(w.fx, BRANCH)).toBe(false);
+    expect(devRange(w.fx)[0]).toBe('LOGIS-3938: tambah t2');
+  });
+
+  it('--push-ticket → branch tiket ikut di-push', async () => {
+    const w = world();
+    await runPr({ ...baseOpts, pushTicket: true }, w.deps());
+    expect(w.fx.b('rev-parse', `refs/heads/${BRANCH}`)).toBe(w.fx.g('rev-parse', 'HEAD'));
+  });
+
+  it("config pushTicketBranch: 'always' → branch tiket ikut di-push", async () => {
+    const w = world({ config: { pushTicketBranch: 'always' } });
+    await runPr(baseOpts, w.deps());
+    expect(hasRemote(w.fx, BRANCH)).toBe(true);
+  });
+
+  it('PR dari branch tiket (production) → branch tiket tetap di-push', async () => {
+    const w = world();
+    await runPr({ ...baseOpts, base: 'production' }, w.deps());
+    expect(hasRemote(w.fx, BRANCH)).toBe(true);
+  });
+
+  it('--dry-run menyebutkan branch tiket tidak akan di-push', async () => {
+    const w = world();
+    await runPr({ ...baseOpts, dryRun: true }, w.deps());
+    expect(w.log.lines.some((l) => l.includes('[dry-run]') && l.includes('tidak di-push'))).toBe(true);
+  });
+});
+
 describe('hotfix & opsi target', () => {
   it('hotfix default: hotfix → production & LOGIS-XXXX-dev → development, satu pesan Teams', async () => {
     const w = world({ branch: 'hotfix/LOGIS-3938-null-driver' });

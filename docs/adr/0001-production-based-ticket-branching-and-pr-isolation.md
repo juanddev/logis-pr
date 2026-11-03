@@ -71,7 +71,7 @@ Urutan `logis-pr -m "…"`:
 5. Rencana & **simulasi** `-dev` di worktree sementara → validasi hasil cherry-pick → simulasi merge ke target → validasi isi PR → stop bila ada masalah atau konflik.
 6. Konfirmasi allowlist.
 7. Commit sungguhan → **validasi ulang pada commit nyata** → simulasi ulang.
-8. Buat/fast-forward ref `-dev` (atomik, `update-ref new old`), push branch tiket, push `-dev` (tanpa force).
+8. Buat/fast-forward ref `-dev` (atomik, `update-ref new old`), push `-dev` (tanpa force). Branch tiket hanya di-push bila ada PR darinya (production/hotfix) atau diminta (`--push-ticket`, `pushTicketBranch: always`), supaya GitHub tidak menawarkan PR kedua dari branch tiket (sejak 2.1.0).
 9. Buat atau pakai ulang PR (filter head **dan** base) → verifikasi PR di GitHub.
 10. Reviewer, Jira, Teams (non-kritis, seperti sebelumnya).
 

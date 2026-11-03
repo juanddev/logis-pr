@@ -1,6 +1,6 @@
 {
   "name": "logis-pr",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "CLI lintas platform (Windows & macOS) untuk workflow review PR tim LOGis: commit+push, PR via gh, Jira Code Review, notifikasi Teams.",
   "license": "UNLICENSED",
   "private": true,

@@ -29,6 +29,11 @@ export interface Config {
   envBranches: string;
   /** Nama branch integrasi untuk PR ke development. {TICKET} = LOGIS-1234, {BRANCH} = nama branch tiket. */
   devBranchPattern: string;
+  /**
+   * Kapan branch tiket di-push: 'auto' = hanya bila ada PR dari branch tiket (production/hotfix);
+   * PR ke development cukup lewat branch integrasi. 'always' = selalu di-push (backup di remote).
+   */
+  pushTicketBranch: string;
   /** Username GitHub reviewer PR (dipisah koma). Kosong = tidak meminta review. */
   prReviewers: string;
   repoPrefix: string;
@@ -55,6 +60,7 @@ export const DEFAULT_CONFIG: Config = {
   remote: 'origin',
   envBranches: 'staging, development',
   devBranchPattern: '{TICKET}-dev',
+  pushTicketBranch: 'auto',
   prReviewers: 'firdausnp',
   repoPrefix: 'SELOG_LOGIS_',
 };
@@ -78,6 +84,7 @@ export const ENV_VARS: Record<ConfigKey, string> = {
   remote: 'LOGIS_PR_REMOTE',
   envBranches: 'LOGIS_PR_ENV_BRANCHES',
   devBranchPattern: 'LOGIS_PR_DEV_BRANCH_PATTERN',
+  pushTicketBranch: 'LOGIS_PR_PUSH_TICKET_BRANCH',
   prReviewers: 'LOGIS_PR_REVIEWERS',
   repoPrefix: 'LOGIS_PR_REPO_PREFIX',
 };
@@ -132,6 +139,7 @@ function normalizeConfig(cfg: Config): Config {
     remote: cfg.remote.trim(),
     envBranches: cfg.envBranches.trim(),
     devBranchPattern: cfg.devBranchPattern.trim(),
+    pushTicketBranch: cfg.pushTicketBranch.trim().toLowerCase() === 'always' ? 'always' : 'auto',
     prReviewers: cfg.prReviewers.trim(),
     repoPrefix: cfg.repoPrefix.trim(),
     teamsMode,
