@@ -10,7 +10,7 @@
  *   seed/              ← clone "orang lain" untuk mendorong perubahan ke remote
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { PullRequest, PrDetails, ReviewerResult } from '../src/github/index.js';
@@ -64,7 +64,11 @@ export function makeFixture(): Fixture {
   run(root, ['init', '-q', '--bare', bare]);
   run(root, ['init', '-q', '-b', 'production', seed]);
   const s = (...a: string[]) => run(seed, a);
-  const write = (rel: string, content: string, dir = work) => writeFileSync(path.join(dir, rel), content);
+  const write = (rel: string, content: string, dir = work) => {
+    const file = path.join(dir, rel);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, content);
+  };
   const commitIn = (dir: string, msg: string, files: Record<string, string>) => {
     for (const [f, c] of Object.entries(files)) write(f, c, dir);
     run(dir, ['add', '--', ...Object.keys(files)]);

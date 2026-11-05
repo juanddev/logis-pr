@@ -2,7 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPr, type RunDeps, type RunOptions } from '../src/cli/run.js';
 import { DEFAULT_CONFIG, type Config } from '../src/config/index.js';
-import { analyzeDependentTicket, dependentRejections, detectDependencies, prMergeBranch } from '../src/git/dependent.js';
+import {
+  analyzeDependentTicket,
+  dependentRejections,
+  detectDependencies,
+  isDependencyIgnoredPath,
+  parseDependsOnOption,
+  prMergeBranch,
+} from '../src/git/dependent.js';
 import { Git } from '../src/git/index.js';
 import { describeProblems, type IsolationContext } from '../src/git/isolation.js';
 import { JiraClient } from '../src/jira/index.js';
@@ -63,6 +70,43 @@ describe('dependentRejections', () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.message).toMatch(re);
     expect(out[0]?.hint).toBeTruthy();
+  });
+});
+
+describe('parseDependsOnOption', () => {
+  const parse = (value: string) => parseDependsOnOption(value, 'LOGIS', KEY);
+
+  it.each([
+    ['LOGIS-3931', ['LOGIS-3931']],
+    ['logis-3944, 3931,LOGIS-3931', ['LOGIS-3931', 'LOGIS-3944']],
+    ['LOGIS-3931,LOGIS-999', ['LOGIS-999', 'LOGIS-3931']],
+    ['none', []],
+    [' NONE ', []],
+    ['-', []],
+  ])('%j → %j', (value, keys) => {
+    expect(parse(value)).toEqual(keys);
+  });
+
+  it.each([
+    ['', /kosong/],
+    [' , ', /kosong/],
+    ['ABC-1', /tidak valid/],
+    ['none,LOGIS-1', /tidak valid/],
+    ['LOGIS-1;LOGIS-2', /tidak valid/],
+    ['logis-3945', /tiket ini sendiri/],
+    ['3945,LOGIS-1', /tiket ini sendiri/],
+  ])('%j ditolak', (value, re) => {
+    expect(() => parse(value)).toThrow(re);
+  });
+});
+
+describe('isDependencyIgnoredPath', () => {
+  it.each(['documentation/a.txt', 'documentation/sub/a.ts', 'Documentation/a.txt', 'README.md', 'docs/x.md', 'src/a/b.MD'])('%s diabaikan', (f) => {
+    expect(isDependencyIgnoredPath(f)).toBe(true);
+  });
+
+  it.each(['documentation.ts', 'src/documentation/x.ts', 'mydocumentation/a.txt', 'a.md.ts', 'md', 'docs/x.txt'])('%s tetap dihitung', (f) => {
+    expect(isDependencyIgnoredPath(f)).toBe(false);
   });
 });
 
@@ -205,6 +249,50 @@ describe('detectDependencies', () => {
     const { git } = setup();
     expect(await detectDependencies(git, scope, [])).toEqual([]);
   });
+
+  it('commit development yang hanya menyentuh dokumen yang sama → tidak dihitung', async () => {
+    const docs = { 'README.md': '# dev\n', 'documentation/guide.txt': 'dev\n', 'src/notes.md': 'dev\n' };
+    const { fx, git } = setup((f) => {
+      f.s('switch', '-q', 'development');
+      f.commit('LOGIS-3800: dokumen', docs, 'seed');
+      f.s('push', '-q', 'origin', 'development');
+    });
+    fx.commit('LOGIS-3945: dokumen dan kode', { 'README.md': '# tiket\n', 'documentation/guide.txt': 'tiket\n', 'src/notes.md': 'tiket\n', 't.ts': 'x\n' });
+    expect(await detect(git, fx)).toEqual([]);
+  });
+
+  it('tiket yang hanya menyentuh dokumen → kosong, tanpa memanggil git log', async () => {
+    const { fx, git } = setup();
+    fx.commit('LOGIS-3945: dokumen', { 'README.md': '# tiket\n', 'documentation/guide.ts': 'x\n' });
+    const touching = vi.spyOn(git, 'commitsTouching');
+    const merges = vi.spyOn(git, 'mergeCommits');
+    expect(await detect(git, fx)).toEqual([]);
+    expect(touching).not.toHaveBeenCalled();
+    expect(merges).not.toHaveBeenCalled();
+  });
+
+  it('merge PR yang hanya menyentuh dokumen yang sama → tidak dihitung', async () => {
+    const { fx, git } = setup((f) => mergePr(f, 'feature/LOGIS-3944-abc', { 'documentation/guide.txt': 'x\n', 'notes.md': 'x\n' }));
+    fx.commit('LOGIS-3945: dokumen dan kode', { 'documentation/guide.txt': 'y\n', 'notes.md': 'y\n', 't.ts': 'x\n' });
+    expect(await detect(git, fx)).toEqual([]);
+  });
+
+  it('commit campuran kode + dokumen tetap dihitung lewat file kodenya', async () => {
+    const { fx, git } = setup((f) => {
+      f.s('switch', '-q', 'development');
+      f.commit('LOGIS-3800: kode dan dokumen', { 'shared.ts': 'x\n', 'README.md': '# dev\n' }, 'seed');
+      f.commit('LOGIS-3801: dokumen saja', { 'README.md': '# dev lagi\n' }, 'seed');
+      f.s('push', '-q', 'origin', 'development');
+    });
+    fx.commit('LOGIS-3945: kode dan dokumen', { 'shared.ts': 'y\n', 'README.md': '# tiket\n' });
+    expect(await detect(git, fx)).toEqual(['LOGIS-3800']);
+  });
+
+  it('merge PR campuran kode + dokumen tetap dihitung lewat file kodenya', async () => {
+    const { fx, git } = setup((f) => mergePr(f, 'feature/LOGIS-3944-abc', { 'shared.ts': 'x\n', 'README.md': '# pr\n' }));
+    fx.commit('LOGIS-3945: kode dan dokumen', { 'shared.ts': 'y\n', 'README.md': '# tiket\n' });
+    expect(await detect(git, fx)).toEqual(['LOGIS-3944']);
+  });
 });
 
 describe('Git: mergeCheckReadOnly', () => {
@@ -313,6 +401,70 @@ async function expectBlocked(w: World, o: RunOptions, re: RegExp, exitCode = 1):
   expect(w.state.teams).toHaveLength(0);
   return err as CliError;
 }
+
+/** Baris daftar commit tiket di langkah [1/5], tanpa prefix logger. */
+function commitList(w: World): string[] {
+  const from = w.log.lines.findIndex((l) => /commit tiket:$/.test(l));
+  expect(from).toBeGreaterThanOrEqual(0);
+  const out: string[] = [];
+  for (const l of w.log.lines.slice(from + 1)) {
+    if (!l.startsWith('dim: ')) break;
+    out.push(l.slice('dim: '.length).trim());
+  }
+  return out;
+}
+
+const shadowCommits = (w: World) => w.gitCalls.filter((a) => a.includes('commit-tree'));
+
+describe('daftar commit tiket & commit bayangan', () => {
+  const line = (w: World, rev = 'HEAD') => w.fx.g('log', '-1', '--format=%h %s', rev);
+
+  it('regresi: tanpa -m dan tree bersih → daftar berakhir di SHA HEAD, tanpa "(commit baru)" dan tanpa commit bayangan', async () => {
+    const w = world({ clean: true });
+    w.fx.commit('LOGIS-3945: commit kedua', { 't2.ts': 'dua\n' });
+    const res = await runPr({ ...opts, message: undefined }, w.deps());
+    expect(commitList(w)).toEqual([line(w, 'HEAD~1'), line(w)]);
+    expect(commitList(w).at(-1)).toMatch(/^[0-9a-f]{7,} LOGIS-3945: commit kedua$/);
+    expect(w.output()).not.toContain('commit baru');
+    expect(shadowCommits(w)).toEqual([]);
+    expect(res.committed).toBe(false);
+  });
+
+  it('-m tanpa file yang bisa di-commit → tanpa label dan tanpa commit bayangan', async () => {
+    const w = world({ clean: true });
+    const res = await runPr(opts, w.deps());
+    expect(commitList(w)).toEqual([line(w)]);
+    expect(shadowCommits(w)).toEqual([]);
+    expect(res.committed).toBe(false);
+    expect(w.output()).toContain('pesan -m diabaikan');
+  });
+
+  it('-m dengan perubahan → commit bayangan dibuat dan berlabel di baris terakhir', async () => {
+    const w = world();
+    const lama = line(w);
+    const res = await runPr(opts, w.deps());
+    expect(commitList(w)).toEqual([lama, '(commit baru) LOGIS-3945: tambah fitur']);
+    expect(shadowCommits(w)).toHaveLength(1);
+    expect(res.committed).toBe(true);
+  });
+
+  it('--dry-run tanpa -m → daftar berakhir di SHA HEAD, tanpa commit bayangan', async () => {
+    const w = world({ clean: true });
+    await runPr({ ...opts, message: undefined, dryRun: true }, w.deps());
+    expect(commitList(w)).toEqual([line(w)]);
+    expect(shadowCommits(w)).toEqual([]);
+  });
+
+  it('jalur normal --dry-run tanpa -m → daftar & rencana cherry-pick memakai SHA HEAD', async () => {
+    const w = world({ from: 'production', clean: true });
+    const short = w.fx.g('log', '-1', '--format=%h');
+    await runPr({ ...opts, dependent: false, message: undefined, dryRun: true }, w.deps());
+    expect(commitList(w)).toEqual([line(w)]);
+    expect(w.output()).not.toContain('commit baru');
+    expect(w.output()).toContain(`cherry-pick -x: ${short}`);
+    expect(shadowCommits(w)).toEqual([]);
+  });
+});
 
 describe('alur --dependent', () => {
   it('branch berbasis development berisi commit tiket saja → PR dari branch tiket, tanpa -dev, push tanpa force', async () => {
@@ -569,6 +721,75 @@ describe('--dependent: dependensi di output, body PR, dan Teams', () => {
     expect(w.github.edits).toHaveLength(0);
     expect(w.github.prs[0]?.body).toBe('x');
     expect(w.output()).toMatch(/\[dry-run\] Bagian depends-on di PR #901 akan ditambahkan/);
+  });
+});
+
+describe('--depends-on menimpa hasil deteksi', () => {
+  const section = (b = '') => b.slice(b.indexOf(DEPENDS_ON_START), b.indexOf(DEPENDS_ON_END));
+  const detected = { files: { 'dev1.ts': 'punya tiket\n' } }; // tanpa override: LOGIS-371
+  const ranDetection = (w: World) => w.gitCalls.some((a) => a.includes('--full-history'));
+
+  it('dengan commit -m: hasil, body PR, dan Teams hanya memuat override; deteksi tidak dijalankan', async () => {
+    const w = world(detected);
+    const res = await runPr({ ...opts, dependsOn: 'logis-3944, 3931' }, w.deps());
+    expect(res.committed).toBe(true);
+    expect(res.dependsOn).toEqual(['LOGIS-3931', 'LOGIS-3944']);
+    expect(section(w.github.prs[0]?.body)).toContain('[LOGIS-3931]');
+    expect(section(w.github.prs[0]?.body)).toContain('[LOGIS-3944]');
+    expect(section(w.github.prs[0]?.body)).not.toContain('LOGIS-371');
+    expect(w.state.teams[0]?.text.split('\n').at(-1)).toBe('Depends on: LOGIS-3931, LOGIS-3944');
+    expect(w.github.edits).toHaveLength(0);
+    expect(ranDetection(w)).toBe(false);
+    expect(w.output()).toContain('Dependensi dari --depends-on (deteksi dilewati): LOGIS-3931, LOGIS-3944');
+    expect(w.output()).not.toContain('Dependensi terdeteksi');
+  });
+
+  it('tanpa override, kasus yang sama tetap memakai deteksi', async () => {
+    const w = world(detected);
+    const res = await runPr(opts, w.deps());
+    expect(res.dependsOn).toEqual(['LOGIS-371']);
+    expect(ranDetection(w)).toBe(true);
+  });
+
+  it('none pada PR baru: tanpa bagian depends-on dan tanpa baris Teams', async () => {
+    const w = world(detected);
+    const res = await runPr({ ...opts, dependsOn: 'none' }, w.deps());
+    expect(res.dependsOn).toEqual([]);
+    expect(w.github.prs[0]?.body).not.toContain(DEPENDS_ON_START);
+    expect(w.state.teams[0]?.text).not.toContain('Depends on');
+    expect(ranDetection(w)).toBe(false);
+    expect(w.output()).toContain('Dependensi dari --depends-on (deteksi dilewati): tidak ada');
+  });
+
+  it('none pada PR yang sudah punya bagian depends-on: isinya diganti', async () => {
+    const w = world({ ...detected, clean: true });
+    await runPr({ ...opts, message: undefined }, w.deps());
+    expect(section(w.github.prs[0]?.body)).toContain('LOGIS-371');
+    await runPr({ ...opts, message: undefined, dependsOn: 'none' }, w.deps());
+    expect(w.github.edits).toHaveLength(1);
+    expect(section(w.github.prs[0]?.body)).not.toContain('LOGIS-371');
+    expect(section(w.github.prs[0]?.body)).toContain('Tidak ada dependensi');
+  });
+
+  it('--dry-run menampilkan override tanpa efek samping', async () => {
+    const w = world(detected);
+    const before = localState(w.fx);
+    const res = await runPr({ ...opts, dryRun: true, dependsOn: 'LOGIS-3931' }, w.deps());
+    expect(res.dependsOn).toEqual(['LOGIS-3931']);
+    expect(localState(w.fx)).toBe(before);
+    expect(w.github.prs).toHaveLength(0);
+    expect(w.output()).toContain('[dry-run] PR baru akan memuat bagian depends-on: LOGIS-3931');
+    expect(w.output()).toContain('Depends on: LOGIS-3931');
+  });
+
+  it.each([
+    ['tanpa --dependent', { dependent: false, dependsOn: 'LOGIS-3931' }, /hanya berlaku bersama --dependent/],
+    ['tanpa --dependent, nilai none', { dependent: false, dependsOn: 'none' }, /hanya berlaku bersama --dependent/],
+    ['key tidak valid', { dependsOn: 'ABC-1' }, /tidak valid/],
+    ['key tiket sendiri', { dependsOn: 'LOGIS-3945' }, /tiket ini sendiri/],
+    ['string kosong', { dependsOn: '' }, /kosong/],
+  ])('%s → ditolak sebelum efek samping', async (_n, over, re) => {
+    await expectBlocked(world(detected), { ...opts, ...over }, re);
   });
 });
 

@@ -9,7 +9,7 @@ import {
   type BaseChoice,
   type Git,
 } from '../git/index.js';
-import { analyzeDependentTicket, dependentRejections, detectDependencies } from '../git/dependent.js';
+import { analyzeDependentTicket, dependentRejections, detectDependencies, parseDependsOnOption } from '../git/dependent.js';
 import {
   analyzeTicket,
   describeProblems,
@@ -64,6 +64,8 @@ export interface RunOptions {
   pushTicket?: boolean;
   /** --dependent: tiket bergantung pada kode development; PR langsung branch tiket → development. */
   dependent?: boolean;
+  /** --depends-on: key tiket dipisah koma ('none' = tanpa dependensi); menimpa hasil deteksi. Hanya dengan --dependent. */
+  dependsOn?: string;
 }
 
 export type GitLike = Pick<
@@ -164,7 +166,7 @@ export interface RunResult {
   jira: JiraStep;
   teams: TeamsStep;
   message: TeamsMessage;
-  /** Tiket dependensi yang terdeteksi (hanya --dependent). */
+  /** Tiket dependensi dari --depends-on atau hasil deteksi (hanya --dependent). */
   dependsOn: string[];
 }
 
@@ -284,7 +286,12 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       pushTicket: Boolean(opts.pushTicket),
     })[0];
     if (rejected) throw new CliError(rejected.message, { hint: rejected.hint });
+  } else if (opts.dependsOn !== undefined) {
+    throw new CliError('--depends-on hanya berlaku bersama --dependent.', {
+      hint: 'Tambahkan --dependent, atau hapus opsi --depends-on.',
+    });
   }
+  const dependsOnOverride = opts.dependsOn !== undefined ? parseDependsOnOption(opts.dependsOn, config.jiraProjectKey, ticketKey) : null;
   let bases: string[];
   if (dependent) {
     bases = [dev];
@@ -449,7 +456,12 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   if (willCommit) commitMessage = ensureCommitPrefix(opts.message ?? '', ticketKey);
   // Commit bayangan = isi branch tiket SETELAH commit, tanpa menyentuh branch/index/file.
   // --dependent memvalidasi pesan commit, jadi commit bayangan harus membawa pesan sungguhan.
-  const snapshot = await git.snapshotCommit(willCommit ? plan : { ...plan, files: [] }, dependent ? commitMessage : undefined);
+  // Tanpa perubahan yang akan di-commit tidak ada commit bayangan: validasi langsung memakai HEAD.
+  const snapshot = willCommit ? await git.snapshotCommit(plan, dependent ? commitMessage : undefined) : null;
+  const startHead = snapshot ?? (await git.resolve('HEAD'));
+  if (!startHead) {
+    throw new CliError(`Branch '${branch}' belum punya commit.`, { hint: 'Buat perubahan lalu jalankan dengan -m "pesan commit".' });
+  }
 
   const stopProblems = (title: string, problems: readonly Problem[], hint: string, exitCode = 1): never => {
     big([title, ...describeProblems(problems), 'Tidak ada push, PR, transisi Jira, maupun pesan Teams yang dijalankan.']);
@@ -468,6 +480,8 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     `Untuk sinkron, merge ${R}/${dev} saja. Tiket lain yang belum masuk ${dev} harus di-merge dulu ke ${dev}.`;
   const stopHint = dependent ? dependentHint : ticketHint;
   const dependencyScope = { remote: R, prod, base: dev, projectKey: config.jiraProjectKey, ticketKey };
+  const resolveDependsOn = async (commits: TicketAnalysis['commits']): Promise<string[]> =>
+    dependsOnOverride ?? detectDependencies(git, dependencyScope, commits);
 
   /**
    * Jalur normal berhenti karena commit development/staging: bila commit tiket tidak bisa di-cherry-pick ke
@@ -508,7 +522,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     }
     return t;
   };
-  let ticket = await analyze(snapshot);
+  let ticket = await analyze(startHead);
   for (const w of ticket.warnings) log.warn(w);
   const homeBranch = dependent ? dev : prod;
   if (ticket.commits.length === 0) {
@@ -611,7 +625,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   };
 
   log.step(`[2/5] Validasi isi PR`);
-  let targets = await prepare(ticket, snapshot, dry ? '[dry-run] ' : '');
+  let targets = await prepare(ticket, startHead, dry ? '[dry-run] ' : '');
   const showTargets = (ts: Target[]) => {
     for (const t of ts) {
       const p = t.plan;
@@ -632,8 +646,10 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
 
   let dependsOn: string[] = [];
   if (dependent) {
-    dependsOn = await detectDependencies(git, dependencyScope, ticket.commits);
-    if (dependsOn.length) {
+    dependsOn = await resolveDependsOn(ticket.commits);
+    if (dependsOnOverride) {
+      log.ok(`Dependensi dari --depends-on (deteksi dilewati): ${dependsOn.join(', ') || 'tidak ada'}`);
+    } else if (dependsOn.length) {
       log.ok(`Dependensi terdeteksi (menyentuh file yang sama, belum ada di ${prod}): ${dependsOn.join(', ')}`);
     } else {
       log.info(`Tidak ada dependensi terdeteksi dari file yang disentuh tiket ini.`);
@@ -683,7 +699,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       );
     }
     targets = await prepare(ticket, realHead, '');
-    if (dependent) dependsOn = await detectDependencies(git, dependencyScope, ticket.commits);
+    if (dependent) dependsOn = await resolveDependsOn(ticket.commits);
   }
 
   // Branch tiket hanya di-push bila ada PR darinya (production/hotfix), kecuali diminta. Push yang tidak
