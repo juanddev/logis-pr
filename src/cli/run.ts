@@ -567,11 +567,18 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
         log.info(`${label}Semua commit tiket sudah ada di '${b}' — PR ke ${b} tidak diperlukan.`);
         continue;
       }
-      const pick = await git.replayDetached(ip.start, ip.steps);
+      let pick = await git.replayDetached(ip.start, ip.steps);
+      let fromBase = false;
+      if (!pick.ok && ip.baseStart) {
+        // Tiket bertumpuk: commit dasarnya sudah di base, jadi -dev dimulai dari ujung base.
+        pick = await git.replayDetached(ip.baseStart, ip.steps);
+        fromBase = true;
+      }
+      ip.start = fromBase && pick.ok ? (ip.baseStart as string) : ip.start;
       if (!pick.ok) {
         big([
           `CHERRY-PICK KE '${name}' KONFLIK`,
-          `Commit ${pick.failedAt.slice(0, 7)} tidak bisa diterapkan di atas ${ip.existed ? name : `titik awal branch tiket di ${prod}`}:`,
+          `Commit ${pick.failedAt.slice(0, 7)} tidak bisa diterapkan di atas ${ip.existed ? name : fromBase ? `ujung ${b}` : `titik awal branch tiket di ${prod}`}:`,
           ...pick.files.slice(0, 15).map((f) => `  ${f}`),
           'Simulasi dilakukan di worktree sementara; branch tiket & branch integrasi tidak diubah.',
         ]);
@@ -579,7 +586,11 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
           exitCode: 2,
           hint: ip.existed
             ? `Branch integrasi sudah berisi perubahan lain. Selesaikan manual: git switch ${name} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}`
-            : `Laporkan ke maintainer logis-pr: commit tiket seharusnya bisa diputar ulang di titik awalnya.`,
+            : fromBase
+              ? `Commit tiket bertabrakan dengan perubahan di ${b} di luar tiket dasar. Selesaikan manual:\n` +
+                `  git switch -c ${name} ${R}/${b} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}\n` +
+                `Lalu jalankan logis-pr lagi.`
+              : `Laporkan ke maintainer logis-pr: commit tiket seharusnya bisa diputar ulang di titik awalnya.`,
         });
       }
       const post = await validateIntegrationTip(git, ctx, t, b, name, pick.sha);
@@ -630,7 +641,11 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     for (const t of ts) {
       const p = t.plan;
       if (p) {
-        const what = p.existed ? `perbarui '${p.name}'` : `buat '${p.name}' dari ${prod} (titik awal branch tiket)`;
+        const what = p.existed
+          ? `perbarui '${p.name}'`
+          : p.start === p.baseStart
+            ? `buat '${p.name}' dari ujung ${t.base} (commit dasarnya sudah ada di ${t.base})`
+            : `buat '${p.name}' dari ${prod} (titik awal branch tiket)`;
         log.ok(`${what}: ${p.toPick.length} commit di-cherry-pick, ${p.present.length} sudah ada${p.inBase.length ? `, ${p.inBase.length} sudah ada di ${t.base}` : ''}`);
       }
       const r = t.report;

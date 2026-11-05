@@ -186,8 +186,13 @@ export async function analyzeTicket(git: GitReader, ctx: IsolationContext, head:
 export interface IntegrationPlan {
   name: string;
   base: string;
-  /** Commit awal untuk cherry-pick: ujung branch integrasi yang ada, atau ujung production. */
+  /** Commit awal untuk cherry-pick: ujung branch integrasi yang ada, atau titik awal branch tiket di production. */
   start: string;
+  /**
+   * Titik awal cadangan (ujung base) untuk -dev baru, bila commit tiket yang sudah ada di base mendahului
+   * commit yang di-pick. Dipakai hanya bila replay dari `start` konflik.
+   */
+  baseStart: string | null;
   local: string | null;
   remote: string | null;
   existed: boolean;
@@ -314,8 +319,17 @@ export async function planIntegration(
   if (!steps.some((s) => s.kind === 'pick')) steps.length = 0;
   // Branch integrasi baru dimulai dari titik awal branch tiket di production (bukan ujung production
   // terbaru), sehingga cherry-pick diterapkan di atas isi yang sama seperti saat commit dibuat.
+  // Tiket bertumpuk (mis. LOGIS-3946 di atas LOGIS-3943 yang sudah di development): commit yang dilewati
+  // karena sudah ada di base bisa jadi dasar commit yang di-pick, sehingga dari titik awal production pick
+  // itu konflik. Untuk kasus itu disiapkan `baseStart` (ujung base, yang sudah memuat isinya) sebagai
+  // titik awal cadangan; PR tetap hanya berisi commit yang di-pick.
+  let baseStart: string | null = null;
+  if (!tip && inBaseSet.size > 0 && pickSet.size > 0) {
+    const firstPick = ticket.order.findIndex((m) => pickSet.has(m.sha));
+    if (ticket.order.some((m, i) => i < firstPick && inBaseSet.has(m.sha))) baseStart = await git.resolve(baseRef);
+  }
   const start = tip ?? ticket.forkPoint;
-  return { name, base, start, local, remote, existed: Boolean(tip), toPick, steps, present, inBase, problems };
+  return { name, base, start, baseStart, local, remote, existed: Boolean(tip), toPick, steps, present, inBase, problems };
 }
 
 /** Validasi ulang ujung branch integrasi hasil cherry-pick (post-condition sebelum ref diperbarui). */

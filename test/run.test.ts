@@ -211,6 +211,49 @@ describe('alur utama: branch tiket dari production → LOGIS-XXXX-dev → develo
     expect(devRange(w.fx)).toEqual(['LOGIS-3938: tambah t3']);
     expect(w.fx.b('diff', '--name-only', `refs/heads/development...refs/heads/${DEV}`)).toBe('t3.ts');
   });
+
+  it('commit baru mengubah file dari commit tiket yang sudah di development → -dev dimulai dari development, tanpa konflik', async () => {
+    const w = world();
+    await runPr(baseOpts, w.deps());
+    w.fx.s('fetch', '-q', 'origin');
+    w.fx.s('switch', '-q', 'development');
+    w.fx.s('merge', '-q', '--no-ff', '-m', 'Merge PR', `origin/${DEV}`);
+    w.fx.s('push', '-q', 'origin', 'development', `:${DEV}`);
+    w.fx.g('fetch', '-q', '--prune', 'origin');
+    w.fx.g('branch', '-q', '-D', DEV);
+    w.github.prs.length = 0;
+    // t1.ts dibuat oleh commit yang sudah masuk development; commit baru bergantung padanya.
+    w.fx.write('t1.ts', 'satu\ndua\n');
+    w.fx.g('add', 't1.ts');
+    await runPr({ ...baseOpts, message: 'ubah t1' }, w.deps());
+    expect(w.fails()).toBe('');
+    expect(w.fx.b('log', '--format=%s', `refs/heads/development..refs/heads/${DEV}`)).toBe('LOGIS-3938: ubah t1');
+    expect(w.fx.b('diff', '--name-only', `refs/heads/development...refs/heads/${DEV}`)).toBe('t1.ts');
+    expect(w.fx.b('show', `refs/heads/${DEV}:t1.ts`)).toBe('satu\ndua');
+    expect(w.log.lines.join('\n')).toMatch(/dari ujung development/);
+    expect(w.fx.g('worktree', 'list').split('\n')).toHaveLength(1);
+  });
+
+  it('commit tiket lain yang sudah di development (SHA beda, patch sama) dipakai sebagai dasar → PR hanya berisi tiket ini', async () => {
+    const w = world({ empty: true, clean: true });
+    // Tiket dasar (mis. LOGIS-3943) sudah masuk development lewat -dev-nya sendiri (SHA berbeda).
+    w.fx.commit('LOGIS-3937: dasar', { 'base.ts': 'a\nb\nc\n' });
+    const own = w.fx.g('rev-parse', 'HEAD');
+    w.fx.s('fetch', '-q', 'origin');
+    w.fx.s('switch', '-q', 'development');
+    w.fx.g('push', '-q', 'origin', `${own}:refs/heads/tmp-3937`);
+    w.fx.s('fetch', '-q', 'origin');
+    w.fx.s('cherry-pick', '-x', 'origin/tmp-3937');
+    w.fx.s('push', '-q', 'origin', 'development', ':tmp-3937');
+    w.fx.g('fetch', '-q', '--prune', 'origin');
+    w.fx.write('base.ts', 'a\nB-3938\nc\n');
+    w.fx.g('add', 'base.ts');
+    await runPr({ ...baseOpts, message: 'ubah base' }, w.deps());
+    expect(w.fails()).toBe('');
+    expect(w.fx.b('log', '--format=%s', `refs/heads/development..refs/heads/${DEV}`)).toBe('LOGIS-3938: ubah base');
+    expect(w.fx.b('diff', '--name-only', `refs/heads/development...refs/heads/${DEV}`)).toBe('base.ts');
+    expect(w.github.prs).toHaveLength(1);
+  });
 });
 
 describe('REGRESI PR TERCEMAR — harus berhenti sebelum push/PR', () => {
