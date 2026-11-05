@@ -123,7 +123,8 @@ export function localState(fx: Fixture): string {
 
 /** GitHub tiruan: PR disimpan di memori, isi PR dihitung dari repo bare seperti GitHub. */
 export function fakeGitHub(fx: Fixture, opts: { tamperExtraCommit?: string } = {}) {
-  const prs: Array<PullRequest & { headRefName: string }> = [];
+  const prs: Array<PullRequest & { headRefName: string; body?: string }> = [];
+  const edits: Array<{ number: number; body: string }> = [];
   const reviewers = new Map<number, string[]>();
   let n = 900;
   const gh: GitHubLike = {
@@ -145,6 +146,7 @@ export function fakeGitHub(fx: Fixture, opts: { tamperExtraCommit?: string } = {
         isDraft: Boolean(input.draft),
         baseRefName: input.base,
         headRefName: input.head,
+        body: input.body,
       });
       return `https://github.com/${input.repo}/pull/${number}`;
     },
@@ -158,6 +160,13 @@ export function fakeGitHub(fx: Fixture, opts: { tamperExtraCommit?: string } = {
       const files = run(fx.bare, ['diff', '--name-only', `${base}...${head}`]).split('\n').filter(Boolean).length;
       return { number, url: pr.url, headRefName: pr.headRefName, baseRefName: pr.baseRefName, headRefOid: head, changedFiles: files, commits };
     },
+    prBody: async (_repo, number) => prs.find((p) => p.number === number)?.body ?? '',
+    editPrBody: async (_repo, number, body) => {
+      const pr = prs.find((p) => p.number === number);
+      if (!pr) throw new Error('PR tidak ada');
+      pr.body = body;
+      edits.push({ number, body });
+    },
     ensureReviewers: async (_repo, number, list): Promise<ReviewerResult> => {
       const cur = reviewers.get(number) ?? [];
       const add = list.filter((r) => !cur.includes(r));
@@ -165,5 +174,5 @@ export function fakeGitHub(fx: Fixture, opts: { tamperExtraCommit?: string } = {
       return { requested: add, alreadyRequested: list.filter((r) => cur.includes(r)), alreadyReviewed: [], skippedAuthor: [] };
     },
   };
-  return { gh, prs, reviewers };
+  return { gh, prs, reviewers, edits };
 }

@@ -284,6 +284,30 @@ describe('GitHub reviewers (gh api di-mock)', () => {
   });
 });
 
+describe('GitHub body PR (gh di-mock)', () => {
+  const repo = 'developerserasiautoraya/SELOG_LOGIS_ServiceVehicle';
+
+  it('prBody membaca body apa adanya; null → string kosong; gagal → CliError', async () => {
+    const ok = fakeRunner(() => ({ stdout: JSON.stringify({ body: 'a\r\nb' }) }));
+    expect(await new GitHub(ok.runner).prBody(repo, 7)).toBe('a\r\nb');
+    expect(ok.calls[0]?.args).toEqual(['pr', 'view', '7', '--repo', repo, '--json', 'body']);
+    const empty = fakeRunner(() => ({ stdout: JSON.stringify({ body: null }) }));
+    expect(await new GitHub(empty.runner).prBody(repo, 7)).toBe('');
+    const bad = fakeRunner(() => ({ code: 1, stderr: 'not found' }));
+    await expect(new GitHub(bad.runner).prBody(repo, 7)).rejects.toThrow(/Gagal membaca body PR #7/);
+  });
+
+  it('editPrBody: REST PATCH, body via stdin (bukan argumen)', async () => {
+    const body = 'isi "kutip" $(rm -rf)\nbaris 2';
+    const { runner, calls } = fakeRunner(() => ({ stdout: '{}' }));
+    await new GitHub(runner).editPrBody(repo, 7, body);
+    expect(calls[0]?.args).toEqual(['api', '-X', 'PATCH', `repos/${repo}/pulls/7`, '--input', '-']);
+    expect(JSON.parse(calls[0]?.options?.input ?? '')).toEqual({ body });
+    const bad = fakeRunner(() => ({ code: 1, stderr: 'HTTP 403' }));
+    await expect(new GitHub(bad.runner).editPrBody(repo, 7, body)).rejects.toThrow(/Gagal memperbarui body PR #7/);
+  });
+});
+
 describe('alur branch (flow.ts)', () => {
   it('isHotfixBranch', () => {
     expect(isHotfixBranch('hotfix/LOGIS-1-x', ['hotfix/'])).toBe(true);

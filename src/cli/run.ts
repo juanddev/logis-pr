@@ -96,7 +96,7 @@ export type GitLike = Pick<
   | 'pushBranch'
   | 'replayDetached'
 >;
-export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr' | 'ensureReviewers' | 'prDetails'>;
+export type GitHubLike = Pick<GitHub, 'version' | 'authStatus' | 'findOpenPr' | 'createPr' | 'ensureReviewers' | 'prDetails' | 'prBody' | 'editPrBody'>;
 export type JiraLike = Pick<JiraClient, 'getIssue' | 'moveToStatus'>;
 
 export interface RunDeps {
