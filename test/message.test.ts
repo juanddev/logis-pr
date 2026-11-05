@@ -4,12 +4,18 @@ import {
   buildPrBody,
   buildTeamsMessage,
   ensureCommitPrefix,
+  DEPENDS_ON_END,
+  DEPENDS_ON_START,
   escapeHtml,
   extractTicketKey,
+  extractTicketKeys,
+  messageHasTicket,
   normalizeTicketKey,
   safeHref,
   serviceFromRepo,
+  sortTicketKeys,
   stripTicketPrefix,
+  syncDependsOnSection,
   ticketUrl,
 } from '../src/message/index.js';
 
@@ -180,6 +186,14 @@ describe('buildTeamsMessage', () => {
     expect(buildTeamsMessage({ ...input, prs: [prs[1]!] }).text).toBe(buildTeamsMessage(input).text);
   });
 
+  it('dependsOn: baris setelah Tiket di text & html; escape; kosong = format standar', () => {
+    const msg = buildTeamsMessage({ ...input, dependsOn: ['LOGIS-3931', 'LOGIS-3944'] });
+    expect(msg.text.split('\n').slice(-2)).toEqual([`Tiket: ${input.ticketUrl}`, 'Depends on: LOGIS-3931, LOGIS-3944']);
+    expect(msg.html.endsWith('</a><br>Depends on: LOGIS-3931, LOGIS-3944')).toBe(true);
+    expect(buildTeamsMessage({ ...input, dependsOn: ['<b>&'] }).html).toContain('Depends on: &lt;b&gt;&amp;');
+    expect(buildTeamsMessage({ ...input, dependsOn: [] })).toEqual(buildTeamsMessage(input));
+  });
+
   it('menolak href non-http(s)', () => {
     expect(() => safeHref('javascript:alert(1)')).toThrow(/tidak diizinkan/);
     expect(() => buildTeamsMessage({ ...input, prUrl: 'javascript:alert(1)' })).toThrow();
@@ -197,5 +211,72 @@ describe('buildPrBody', () => {
     const body = buildPrBody({ ticketKey: 'LOGIS-1', ticketUrl: 'https://x/browse/LOGIS-1', summary: 'Hello' });
     expect(body).toContain('Tiket: [LOGIS-1](https://x/browse/LOGIS-1)');
     expect(body).toContain('Hello');
+  });
+});
+
+describe('key tiket di pesan', () => {
+  it('messageHasTicket: key harus berdiri sendiri, di mana pun dalam pesan', () => {
+    expect(messageHasTicket('ver:1.0.0 tkt:LOGIS-3938 msg:x', 'LOGIS-3938')).toBe(true);
+    expect(messageHasTicket('judul\n\nRef: logis-3938', 'LOGIS-3938')).toBe(true);
+    expect(messageHasTicket('LOGIS-39380: x', 'LOGIS-3938')).toBe(false);
+    expect(messageHasTicket('XLOGIS-3938: x', 'LOGIS-3938')).toBe(false);
+  });
+
+  it('extractTicketKeys: semua key, huruf besar, unik', () => {
+    expect(extractTicketKeys('LOGIS-1, logis-2 tkt:LOGIS-1 XLOGIS-3 feature/LOGIS-4-x')).toEqual(['LOGIS-1', 'LOGIS-2', 'LOGIS-4']);
+    expect(extractTicketKeys('tanpa key')).toEqual([]);
+  });
+
+  it('sortTicketKeys: urut numerik', () => {
+    expect(sortTicketKeys(['LOGIS-3931', 'LOGIS-999', 'LOGIS-3930'])).toEqual(['LOGIS-999', 'LOGIS-3930', 'LOGIS-3931']);
+  });
+});
+
+describe('syncDependsOnSection', () => {
+  const JIRA = 'https://x.atlassian.net';
+  const deps = ['LOGIS-1', 'LOGIS-2'];
+  const section = (b: string) => b.slice(b.indexOf(DEPENDS_ON_START), b.indexOf(DEPENDS_ON_END) + DEPENDS_ON_END.length);
+
+  it('menambah bagian tanpa mengubah teks yang ada', () => {
+    const r = syncDependsOnSection('isi asli', deps, JIRA);
+    expect(r.status).toBe('added');
+    expect(r.body.startsWith('isi asli\n\n')).toBe(true);
+    expect(r.body).toContain('- [LOGIS-1](https://x.atlassian.net/browse/LOGIS-1)');
+    expect(r.body).toMatch(/tidak bisa naik ke production sebelum dependensinya rilis/);
+    expect(syncDependsOnSection('', deps, JIRA).body.startsWith(DEPENDS_ON_START)).toBe(true);
+  });
+
+  it('mengganti hanya rentang penanda; CRLF & teks di luar tetap utuh', () => {
+    const lama = syncDependsOnSection('', ['LOGIS-9'], JIRA).body.trimEnd();
+    const body = `atas\r\n\r\n${lama}\r\n\r\nbawah\r\n`;
+    const r = syncDependsOnSection(body, deps, JIRA);
+    expect(r.status).toBe('replaced');
+    expect(r.body.startsWith('atas\r\n\r\n<!--')).toBe(true);
+    expect(r.body.endsWith('-->\r\n\r\nbawah\r\n')).toBe(true);
+    expect(r.body).not.toContain('LOGIS-9');
+  });
+
+  it('isi sama → unchanged, juga bila GitHub mengubah bagian itu menjadi CRLF', () => {
+    const body = syncDependsOnSection('x', deps, JIRA).body;
+    expect(syncDependsOnSection(body, deps, JIRA)).toEqual({ status: 'unchanged', body });
+    const crlf = body.replace(/\n/g, '\r\n');
+    expect(syncDependsOnSection(crlf, deps, JIRA)).toEqual({ status: 'unchanged', body: crlf });
+  });
+
+  it('tanpa dependensi: tanpa bagian → tidak ditambah; ada bagian → penanda tetap, isinya diganti', () => {
+    expect(syncDependsOnSection('x', [], JIRA)).toEqual({ status: 'unchanged', body: 'x' });
+    const r = syncDependsOnSection(syncDependsOnSection('x', deps, JIRA).body, [], JIRA);
+    expect(r.status).toBe('replaced');
+    expect(section(r.body)).toContain('Tidak ada dependensi terdeteksi.');
+    expect(r.body).not.toContain('LOGIS-1');
+  });
+
+  it.each([
+    ['start saja', `a ${DEPENDS_ON_START} b`],
+    ['end saja', `a ${DEPENDS_ON_END} b`],
+    ['terbalik', `${DEPENDS_ON_END} ${DEPENDS_ON_START}`],
+    ['ganda', `${DEPENDS_ON_START}${DEPENDS_ON_END}${DEPENDS_ON_START}${DEPENDS_ON_END}`],
+  ])('penanda rusak (%s) → body tidak disentuh', (_n, body) => {
+    expect(syncDependsOnSection(body, deps, JIRA)).toEqual({ status: 'malformed', body });
   });
 });
