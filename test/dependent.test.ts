@@ -571,3 +571,67 @@ describe('--dependent: dependensi di output, body PR, dan Teams', () => {
     expect(w.output()).toMatch(/\[dry-run\] Bagian depends-on di PR #901 akan ditambahkan/);
   });
 });
+
+describe('jalur normal: saran --dependent', () => {
+  const normal: RunOptions = { ...opts, dependent: false };
+  const conflicting = { files: { 'dev1.ts': 'punya tiket\n' } };
+
+  it('cherry-pick ke production konflik → saran --dependent + dependensi; error & exit code tetap', async () => {
+    const w = world({ ...conflicting, clean: true });
+    const err = await expectBlocked(w, { ...normal, message: undefined }, /branch tiket membawa commit yang bukan milik tiket/);
+    expect(err.hint).toMatch(/bergantung pada kode development/);
+    expect(err.hint).toMatch(/logis-pr --dependent/);
+    expect(err.hint).toMatch(/dev1\.ts/);
+    expect(err.hint).toMatch(/Dependensi terdeteksi: LOGIS-371/);
+    expect(w.fx.g('worktree', 'list').split('\n')).toHaveLength(1);
+  });
+
+  it('cherry-pick ke production bersih → hanya saran lama', async () => {
+    const w = world({ clean: true });
+    const err = await expectBlocked(w, { ...normal, message: undefined }, /bukan milik tiket/);
+    expect(err.hint).not.toMatch(/--dependent/);
+    expect(err.hint).toMatch(/git cherry-pick <sha commit Anda>/);
+    expect(w.gitCalls.some((a) => a.includes('worktree'))).toBe(true);
+  });
+
+  it('perubahan yang akan di-commit (-m) ikut disimulasikan', async () => {
+    const w = world({ clean: true });
+    w.fx.write('dev1.ts', 'diubah\n');
+    const err = await expectBlocked(w, normal, /bukan milik tiket/);
+    expect(err.hint).toMatch(/logis-pr --dependent/);
+  });
+
+  it.each([
+    ['-b production', { branch: BRANCH }, { base: 'production' }],
+    ['branch hotfix', { branch: 'hotfix/LOGIS-3945-x' }, {}],
+  ])('%s → tidak disarankan, karena --dependent akan ditolak', async (_n, w0, over) => {
+    const w = world({ ...conflicting, ...w0, clean: true });
+    const err = await expectBlocked(w, { ...normal, ...over, message: undefined }, /bukan milik tiket/);
+    expect(err.hint).not.toMatch(/--dependent/);
+  });
+
+  it('masalah bukan dari development/staging → tanpa simulasi, saran lama', async () => {
+    const w = world({ from: 'production', clean: true });
+    w.fx.g('merge', '-q', '--no-edit', 'origin/LOGIS-3920');
+    const err = await expectBlocked(w, { ...normal, message: undefined }, /bukan milik tiket/);
+    expect(err.hint).not.toMatch(/--dependent/);
+    expect(w.gitCalls.some((a) => a.includes('worktree'))).toBe(false);
+  });
+
+  it('--dry-run: saran tetap muncul, repo tidak berubah', async () => {
+    const w = world({ ...conflicting, clean: true });
+    const err = await expectBlocked(w, { ...normal, message: undefined, dryRun: true }, /bukan milik tiket/);
+    expect(err.hint).toMatch(/logis-pr --dependent/);
+  });
+
+  it('simulasi gagal total → saran lama, hasil validasi tidak berubah', async () => {
+    const w = world({ ...conflicting, clean: true });
+    const base = w.deps();
+    const git = Object.create(base.git) as RunDeps['git'];
+    git.replayDetached = async () => Promise.reject(new CliError('worktree gagal'));
+    const err = (await runPr({ ...normal, message: undefined }, { ...base, git }).catch((e: unknown) => e)) as CliError;
+    expect(err.exitCode).toBe(1);
+    expect(err.message).toMatch(/bukan milik tiket/);
+    expect(err.hint).not.toMatch(/--dependent/);
+  });
+});

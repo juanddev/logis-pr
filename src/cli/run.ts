@@ -31,6 +31,7 @@ import {
   buildTeamsMessage,
   ensureCommitPrefix,
   extractTicketKey,
+  messageHasTicket,
   normalizeTicketKey,
   serviceFromRepo,
   stripTicketPrefix,
@@ -466,11 +467,45 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
     `  git cherry-pick <sha commit Anda>\n` +
     `Untuk sinkron, merge ${R}/${dev} saja. Tiket lain yang belum masuk ${dev} harus di-merge dulu ke ${dev}.`;
   const stopHint = dependent ? dependentHint : ticketHint;
+  const dependencyScope = { remote: R, prod, base: dev, projectKey: config.jiraProjectKey, ticketKey };
+
+  /**
+   * Jalur normal berhenti karena commit development/staging: bila commit tiket tidak bisa di-cherry-pick ke
+   * production (simulasi di worktree sementara), kemungkinan besar tiket memang bergantung pada kode development.
+   */
+  const ticketStopHint = async (t: TicketAnalysis, head: string): Promise<string> => {
+    const fromEnv = t.problems.some(
+      (p) => p.kind === 'env-commit' || p.kind === 'env-patch' || (p.kind === 'merge' && presentEnvs.includes(p.source)),
+    );
+    // Hotfix dan -b selain development akan ditolak --dependent, jadi jangan disarankan.
+    if (!fromEnv || hotfix || bases.length !== 1 || bases[0] !== dev) return ticketHint;
+    try {
+      const metas = await git.commitMeta(await git.revList(head, [`${R}/${dev}`]));
+      const own = metas.filter((m) => m.parents.length < 2 && ((willCommit && m.sha === head) || messageHasTicket(m.body, ticketKey)));
+      if (own.length === 0) return ticketHint;
+      const pick = await git.replayDetached(`${R}/${prod}`, own.map((c) => ({ kind: 'pick', sha: c.sha })));
+      // Gagal tanpa file konflik berarti bukan konflik (mis. identitas git belum diisi).
+      if (pick.ok || pick.files.length === 0) return ticketHint;
+      const deps = await detectDependencies(git, dependencyScope, own);
+      return [
+        `Tiket tampaknya bergantung pada kode ${dev}: cherry-pick commit tiket ke ${prod} konflik di:`,
+        ...pick.files.slice(0, 10).map((f) => `  ${f}`),
+        `Jalankan logis-pr --dependent untuk PR ke ${dev}.`,
+        ...(deps.length ? [`Dependensi terdeteksi: ${deps.join(', ')}`] : []),
+        `Bila ternyata tidak bergantung: ${ticketHint}`,
+      ].join('\n');
+    } catch {
+      return ticketHint; // simulasi hanya untuk saran; kegagalannya tidak boleh mengubah hasil validasi
+    }
+  };
 
   const analyzeHead = (head: string) => (dependent ? analyzeDependentTicket(git, ctx, dev, head) : analyzeTicket(git, ctx, head));
   const analyze = async (head: string) => {
     const t = await analyzeHead(head);
-    if (t.problems.length) stopProblems('BRANCH TIKET MEMBAWA COMMIT YANG BUKAN MILIK TIKET', t.problems, stopHint);
+    if (t.problems.length) {
+      const hint = dependent ? dependentHint : await ticketStopHint(t, head);
+      stopProblems('BRANCH TIKET MEMBAWA COMMIT YANG BUKAN MILIK TIKET', t.problems, hint);
+    }
     return t;
   };
   let ticket = await analyze(snapshot);
@@ -595,7 +630,6 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   };
   showTargets(targets);
 
-  const dependencyScope = { remote: R, prod, base: dev, projectKey: config.jiraProjectKey, ticketKey };
   let dependsOn: string[] = [];
   if (dependent) {
     dependsOn = await detectDependencies(git, dependencyScope, ticket.commits);
