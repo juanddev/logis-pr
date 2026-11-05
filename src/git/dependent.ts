@@ -5,7 +5,9 @@
  * Semua fungsi di sini READ-ONLY terhadap repo developer. Isolasi berbasis production (isolation.ts)
  * tidak dipakai di mode ini; penggantinya adalah cek isi `origin/<base>..HEAD` di bawah.
  */
-import { extractTicketKeys, messageHasTicket, sortTicketKeys } from '../message/index.js';
+import { splitList } from '../config/index.js';
+import { extractTicketKeys, messageHasTicket, normalizeTicketKey, sortTicketKeys } from '../message/index.js';
+import { CliError } from '../utils/errors.js';
 import type { CommitMeta, Git } from './index.js';
 import type { IsolationContext, Problem, TicketAnalysis } from './isolation.js';
 
@@ -54,6 +56,25 @@ export function dependentRejections(input: {
     });
   }
   return out;
+}
+
+/**
+ * Nilai --depends-on → key tiket yang unik & terurut. `none` atau `-` = tanpa dependensi (penanda eksplisit,
+ * sama seperti -r none). String kosong ditolak agar variabel shell kosong tidak diam-diam menghapus dependensi.
+ */
+export function parseDependsOnOption(value: string, projectKey: string, ticketKey: string): string[] {
+  if (/^\s*(none|-)\s*$/i.test(value)) return [];
+  const raw = splitList(value);
+  if (raw.length === 0) {
+    throw new CliError('Nilai --depends-on kosong.', {
+      hint: `Beri key tiket (mis. --depends-on ${projectKey}-1234,${projectKey}-5678), atau --depends-on none bila tidak ada dependensi.`,
+    });
+  }
+  const keys = sortTicketKeys([...new Set(raw.map((k) => normalizeTicketKey(k, projectKey)))]);
+  if (keys.includes(ticketKey)) {
+    throw new CliError(`--depends-on memuat tiket ini sendiri (${ticketKey}).`, { hint: `Hapus ${ticketKey} dari daftar.` });
+  }
+  return keys;
 }
 
 /**
@@ -118,6 +139,11 @@ export interface DependencyScope {
   ticketKey: string;
 }
 
+/** File yang tidak menandakan ketergantungan kode: `documentation/**` (dari root repo) dan `*.md` di mana pun. */
+export function isDependencyIgnoredPath(file: string): boolean {
+  return /^documentation\/|\.md$/i.test(file);
+}
+
 /**
  * Tiket lain yang menyentuh file yang sama dengan commit tiket dan belum ada di production. Sumbernya dua:
  * pesan commit non-merge di `origin/<prod>..origin/<base>`, dan nama branch di merge PR GitHub.
@@ -128,7 +154,9 @@ export interface DependencyScope {
 export async function detectDependencies(git: DependencyGit, scope: DependencyScope, commits: readonly CommitMeta[]): Promise<string[]> {
   const files = new Set<string>();
   for (const c of commits) {
-    for (const f of await git.filesOfCommit(c.sha)) files.add(f);
+    for (const f of await git.filesOfCommit(c.sha)) {
+      if (!isDependencyIgnoredPath(f)) files.add(f);
+    }
   }
   if (files.size === 0) return [];
 

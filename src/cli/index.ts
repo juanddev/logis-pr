@@ -33,6 +33,7 @@ Contoh:
   logis-pr --dry-run -m "coba"                        simulasi lengkap tanpa mengubah branch/index/file
   logis-pr --audit                                    periksa branch & isi PR, hanya membaca
   logis-pr --dependent -m "lanjutan"                  tiket bergantung pada kode development: PR langsung ke development
+  logis-pr --dependent --depends-on LOGIS-3931        tentukan dependensi sendiri ('none' = tanpa dependensi)
   logis-pr init                                       buat/ubah ~/.logis-pr.json
   logis-pr doctor                                     cek git, gh, config, Jira, Teams
 `;
@@ -51,13 +52,14 @@ interface CliOptions {
   dryRun?: boolean;
   pushTicket?: boolean;
   dependent?: boolean;
+  dependsOn?: string;
 }
 
 async function commandRun(opts: CliOptions): Promise<void> {
   const { config } = await loadConfig();
   if (opts.audit) {
-    if (opts.message || opts.dryRun) {
-      throw new CliError('--audit tidak bisa digabung dengan -m atau --dry-run.', { hint: 'Jalankan: logis-pr --audit' });
+    if (opts.message || opts.dryRun || opts.dependsOn !== undefined) {
+      throw new CliError('--audit tidak bisa digabung dengan -m, --dry-run, atau --depends-on.', { hint: 'Jalankan: logis-pr --audit' });
     }
     const gh = new GitHub(runCommand);
     const auth = await gh.authStatus().catch(() => ({ ok: false, detail: '' }));
@@ -114,6 +116,7 @@ function buildProgram(): Command {
     .option('--no-teams', 'jangan kirim pesan ke Teams')
     .option('--push-ticket', 'push juga branch tiket walau PR-nya hanya lewat LOGIS-XXXX-dev (backup di remote)')
     .option('--dependent', 'tiket bergantung pada kode development: branch berbasis development, PR langsung ke development (tanpa branch integrasi)')
+    .option('--depends-on <keys>', "tiket dependensi, dipisah koma, menimpa hasil deteksi ('none' = tanpa dependensi); hanya dengan --dependent")
     .option('--dry-run', 'simulasi lengkap tanpa commit/branch/push/PR/transisi/pesan (hanya git fetch)')
     .option('--audit', 'periksa branch tiket, branch integrasi, dan isi PR — hanya membaca, tanpa fetch')
     .showHelpAfterError('(jalankan "logis-pr --help" untuk bantuan)')

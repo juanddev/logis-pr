@@ -46,16 +46,21 @@ Yang tetap sama: commit bayangan, simulasi `merge-tree` (konflik → exit 2), ko
 - `-b` berisi `productionBranch` atau target selain `baseBranch`.
 - `--push-ticket`, karena tidak relevan di mode ini.
 - PR open dari `LOGIS-XXXX-dev` ke `baseBranch`, untuk menghindari dua PR ke `development`.
+- `--depends-on` tanpa `--dependent`, berisi string kosong, key tidak valid, atau key tiket sendiri.
 
 ### Deteksi dependensi
 
-1. Ambil file yang disentuh commit tiket di `origin/development..HEAD`.
+1. Ambil file yang disentuh commit tiket di `origin/development..HEAD`, kecuali `documentation/**` (dari root repo) dan `*.md` di mana pun. File ini tidak menandakan ketergantungan kode. Tidak peka huruf besar/kecil.
 2. Di `origin/production..origin/development`, kumpulkan key tiket dari:
    - pesan commit non-merge yang menyentuh file itu;
    - nama branch di `Merge pull request #N from …/<branch>`, bila diff bersih sisi PR menyentuh file itu.
 3. Buang key tiket sendiri, urutkan unik secara numerik.
 
 `git log -- <path>` memakai `--full-history`, karena penyederhanaan history bawaan bisa membuang commit di sisi merge. Merge PR diperiksa tersendiri karena biasanya TREESAME ke salah satu parent, sehingga tidak muncul di log berbasis path.
+
+### Menimpa hasil deteksi
+
+`--depends-on <keys>` (dipisah koma; `3931` dan `logis-3931` diterima) menggantikan hasil deteksi, dan deteksi tidak dijalankan. `--depends-on none` atau `-` berarti tanpa dependensi, untuk positif palsu. Nilai ini berlaku per run dan tidak disimpan: menjalankan ulang tanpa `--depends-on` kembali memakai hasil deteksi, termasuk untuk bagian depends-on di body PR.
 
 ### Catatan dependensi
 
@@ -104,7 +109,7 @@ Bila validasi normal berhenti karena commit `development`/`staging`, commit tike
 ## 7. Sisa risiko
 
 - **Cek key berbasis pesan commit.** Commit tiket lain yang pesannya diberi key tiket ini akan lolos. Subject yang menyebut key lain hanya menjadi peringatan.
-- **Deteksi berbasis kesamaan file, bukan ketergantungan kode.** Bisa positif palsu (file umum seperti `package.json`) maupun negatif palsu (file baru memanggil fungsi yang hanya ada di `development`).
+- **Deteksi berbasis kesamaan file, bukan ketergantungan kode.** Bisa positif palsu (file umum seperti `package.json`) maupun negatif palsu (file baru memanggil fungsi yang hanya ada di `development`). Developer bisa mengoreksinya dengan `--depends-on`.
 - **Commit yang sudah di-cherry-pick ke production** (mis. hotfix lewat `-dev`) punya SHA berbeda, sehingga tetap berada di `production..development` dan tetap tampil sebagai dependensi.
 - **Saran di jalur normal hanya melihat konflik tekstual.** Ketergantungan semantik yang `cherry-pick`-nya bersih tetap mendapat saran lama.
 - **Merge `git pull` branch sendiri ditolak** karena parent-nya bukan bagian dari `origin/development`. Ini sengaja ketat; rapikan dengan `git pull --rebase` sebelum push pertama, atau buat ulang branch.
