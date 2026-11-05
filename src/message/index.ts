@@ -53,8 +53,23 @@ export function buildDesc(summary: string, service: string): string {
 export function ensureCommitPrefix(message: string, ticketKey: string): string {
   const msg = message.trim();
   if (!msg) throw new CliError('Pesan commit tidak boleh kosong.', { hint: 'Contoh: logis-pr -m "tambah validasi"' });
-  const re = new RegExp(`(?:^|[^A-Za-z0-9])${escapeRegExp(ticketKey)}(?![0-9])`, 'i');
-  return re.test(msg) ? msg : `${ticketKey}: ${msg}`;
+  return messageHasTicket(msg, ticketKey) ? msg : `${ticketKey}: ${msg}`;
+}
+
+/** Apakah key tiket muncul berdiri sendiri di pesan? `LOGIS-39380` tidak dianggap memuat `LOGIS-3938`. */
+export function messageHasTicket(message: string, ticketKey: string): boolean {
+  return new RegExp(`(?:^|[^A-Za-z0-9])${escapeRegExp(ticketKey)}(?![0-9])`, 'i').test(message);
+}
+
+/** Semua key tiket di teks (huruf besar, unik, urutan kemunculan). */
+export function extractTicketKeys(text: string, projectKey = 'LOGIS'): string[] {
+  const re = new RegExp(`(?:^|[^A-Za-z0-9])(${escapeRegExp(projectKey)}-\\d+)(?![0-9])`, 'gi');
+  return [...new Set([...text.matchAll(re)].map((m) => (m[1] ?? '').toUpperCase()).filter(Boolean))];
+}
+
+/** Urutkan key tiket secara numerik: `LOGIS-999` sebelum `LOGIS-3931`. */
+export function sortTicketKeys(keys: readonly string[]): string[] {
+  return [...keys].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
 }
 
 /** Hapus prefix key tiket dari awal teks (untuk fallback Desc). */
@@ -101,6 +116,8 @@ export interface TeamsMessageInput {
   /** Lebih dari satu PR (hotfix ke production & development): `PR (<base>): <url>` per baris. */
   prs?: ReadonlyArray<{ base: string; url: string }>;
   ticketUrl: string;
+  /** Tiket yang menjadi dependensi (mode --dependent). Kosong = baris tidak ditambahkan. */
+  dependsOn?: readonly string[];
 }
 
 export interface TeamsMessage {
@@ -113,12 +130,14 @@ export interface TeamsMessage {
 export function buildTeamsMessage(input: TeamsMessageInput): TeamsMessage {
   const prs = input.prs && input.prs.length > 1 ? input.prs : [{ base: '', url: input.prUrl }];
   const label = (base: string) => (base ? `PR (${base})` : 'PR');
+  const dependsOn = input.dependsOn?.length ? `Depends on: ${input.dependsOn.join(', ')}` : null;
   const text = [
     `Task: Review PR ${input.ticketKey}`,
     `Desc: ${input.desc}`,
     '',
     ...prs.map((p) => `${label(p.base)}: ${p.url}`),
     `Tiket: ${input.ticketUrl}`,
+    ...(dependsOn ? [dependsOn] : []),
   ].join('\n');
 
   const link = (url: string) => `<a href="${safeHref(url)}">${escapeHtml(url)}</a>`;
@@ -128,6 +147,7 @@ export function buildTeamsMessage(input: TeamsMessageInput): TeamsMessage {
     '',
     ...prs.map((p) => `${escapeHtml(label(p.base))}: ${link(p.url)}`),
     `Tiket: ${link(input.ticketUrl)}`,
+    ...(dependsOn ? [escapeHtml(dependsOn)] : []),
   ].join('<br>');
 
   return { text, html };
@@ -138,4 +158,48 @@ export function buildPrBody(input: { ticketKey: string; ticketUrl: string; summa
   if (input.summary) parts.push('', input.summary);
   parts.push('', '_Dibuat otomatis oleh logis-pr._');
   return `${parts.join('\n')}\n`;
+}
+
+export const DEPENDS_ON_START = '<!-- logis-pr:depends-on:start -->';
+export const DEPENDS_ON_END = '<!-- logis-pr:depends-on:end -->';
+
+function renderDependsOnSection(deps: readonly string[], jiraBaseUrl: string): string {
+  const content = deps.length
+    ? [
+        ...deps.map((k) => `- [${k}](${ticketUrl(jiraBaseUrl, k)})`),
+        '',
+        '**Catatan:** tiket ini tidak bisa naik ke production sebelum dependensinya rilis.',
+      ]
+    : ['Tidak ada dependensi terdeteksi.'];
+  return [DEPENDS_ON_START, '### Depends on', '', ...content, DEPENDS_ON_END].join('\n');
+}
+
+export type DependsOnStatus = 'unchanged' | 'added' | 'replaced' | 'malformed';
+
+/**
+ * Tulis/perbarui bagian depends-on di body PR. Teks di luar penanda tidak pernah disentuh, termasuk CRLF
+ * yang disimpan GitHub setelah body diedit di web. Penanda rusak (tidak berpasangan/ganda) → body apa adanya.
+ */
+export function syncDependsOnSection(
+  body: string,
+  deps: readonly string[],
+  jiraBaseUrl: string,
+): { status: DependsOnStatus; body: string } {
+  const count = (marker: string) => body.split(marker).length - 1;
+  const starts = count(DEPENDS_ON_START);
+  const ends = count(DEPENDS_ON_END);
+  const section = renderDependsOnSection(deps, jiraBaseUrl);
+
+  if (starts === 0 && ends === 0) {
+    if (deps.length === 0) return { status: 'unchanged', body };
+    const sep = body === '' || body.endsWith('\n\n') ? '' : body.endsWith('\n') ? '\n' : '\n\n';
+    return { status: 'added', body: `${body}${sep}${section}\n` };
+  }
+
+  const from = body.indexOf(DEPENDS_ON_START);
+  const to = body.indexOf(DEPENDS_ON_END);
+  if (starts !== 1 || ends !== 1 || to < from) return { status: 'malformed', body };
+  const end = to + DEPENDS_ON_END.length;
+  if (body.slice(from, end).replace(/\r\n/g, '\n') === section) return { status: 'unchanged', body };
+  return { status: 'replaced', body: `${body.slice(0, from)}${section}${body.slice(end)}` };
 }

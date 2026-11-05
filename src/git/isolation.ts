@@ -42,7 +42,9 @@ export type Problem =
   | { kind: 'integration-foreign'; commit: CommitMeta; branch: string }
   | { kind: 'integration-diverged'; branch: string; local: string; remote: string }
   | { kind: 'pr-unexpected-commit'; commit: CommitMeta; base: string }
-  | { kind: 'pr-unexpected-file'; file: string; status: string; base: string };
+  | { kind: 'pr-unexpected-file'; file: string; status: string; base: string }
+  | { kind: 'dependent-no-ticket'; commit: CommitMeta; ticketKey: string }
+  | { kind: 'dependent-merge'; commit: CommitMeta; base: string };
 
 export interface TicketAnalysis {
   head: string;
@@ -429,6 +431,12 @@ export function describeProblems(problems: readonly Problem[], max = 8): string[
         break;
       case 'pr-unexpected-file':
         add(`File asing di PR ke '${p.base}':`, `${p.status} ${p.file}`);
+        break;
+      case 'dependent-no-ticket':
+        add(`Commit tanpa key ${p.ticketKey} di pesannya:`, `${p.commit.short} ${p.commit.subject}`);
+        break;
+      case 'dependent-merge':
+        add(`Merge commit yang membawa history selain '${p.base}':`, `${p.commit.short} ${p.commit.subject}`);
         break;
     }
   }

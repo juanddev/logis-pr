@@ -183,6 +183,23 @@ export class GitHub {
     }
   }
 
+  /** Body PR apa adanya (bisa mengandung CRLF bila diedit di web). PR tanpa body → string kosong. */
+  async prBody(repo: string, number: number): Promise<string> {
+    const res = await this.exec(['pr', 'view', String(number), '--repo', repo, '--json', 'body']);
+    if (res.code !== 0) throw new CliError(`Gagal membaca body PR #${number}:\n${res.stderr.trim()}`);
+    try {
+      return (JSON.parse(res.stdout) as { body?: string | null }).body ?? '';
+    } catch {
+      throw new CliError(`Output gh pr view #${number} tidak bisa dibaca.`);
+    }
+  }
+
+  /** Ganti body PR. Lewat REST API (lebih stabil dibanding `gh pr edit`), body dikirim via stdin. */
+  async editPrBody(repo: string, number: number, body: string): Promise<void> {
+    const res = await this.exec(['api', '-X', 'PATCH', `repos/${repo}/pulls/${number}`, '--input', '-'], JSON.stringify({ body }));
+    if (res.code !== 0) throw new CliError(`Gagal memperbarui body PR #${number}:\n${(res.stderr || res.stdout).trim()}`);
+  }
+
   /**
    * Minta review dari `reviewers` untuk PR. Idempoten: reviewer yang sudah diminta atau sudah
    * memberi review dilewati (tidak ada notifikasi ulang), dan penulis PR tidak bisa me-review PR-nya

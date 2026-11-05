@@ -32,6 +32,7 @@ Contoh:
   logis-pr -m "fix null driver"   (di hotfix/...)     PR ke production & development (bisa dipilih)
   logis-pr --dry-run -m "coba"                        simulasi lengkap tanpa mengubah branch/index/file
   logis-pr --audit                                    periksa branch & isi PR, hanya membaca
+  logis-pr --dependent -m "lanjutan"                  tiket bergantung pada kode development: PR langsung ke development
   logis-pr init                                       buat/ubah ~/.logis-pr.json
   logis-pr doctor                                     cek git, gh, config, Jira, Teams
 `;
@@ -49,6 +50,7 @@ interface CliOptions {
   teams: boolean;
   dryRun?: boolean;
   pushTicket?: boolean;
+  dependent?: boolean;
 }
 
 async function commandRun(opts: CliOptions): Promise<void> {
@@ -111,6 +113,7 @@ function buildProgram(): Command {
     .option('--no-jira', 'jangan pindahkan status tiket di Jira')
     .option('--no-teams', 'jangan kirim pesan ke Teams')
     .option('--push-ticket', 'push juga branch tiket walau PR-nya hanya lewat LOGIS-XXXX-dev (backup di remote)')
+    .option('--dependent', 'tiket bergantung pada kode development: branch berbasis development, PR langsung ke development (tanpa branch integrasi)')
     .option('--dry-run', 'simulasi lengkap tanpa commit/branch/push/PR/transisi/pesan (hanya git fetch)')
     .option('--audit', 'periksa branch tiket, branch integrasi, dan isi PR — hanya membaca, tanpa fetch')
     .showHelpAfterError('(jalankan "logis-pr --help" untuk bantuan)')
