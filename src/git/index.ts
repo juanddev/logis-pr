@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { CliError } from '../utils/errors.js';
@@ -176,8 +176,9 @@ export class Git {
    * Buat commit "bayangan" berisi perubahan yang AKAN di-commit, tanpa menyentuh branch, index,
    * maupun file kerja. Dipakai untuk cek konflik sebelum commit sungguhan (juga saat --dry-run).
    * Commit ini tidak direferensikan siapa pun dan akan dibersihkan git gc.
+   * `message`: pesan yang akan dipakai commit sungguhan, bila pesan itu ikut divalidasi (--dependent).
    */
-  async snapshotCommit(plan: CommitPlan): Promise<string> {
+  async snapshotCommit(plan: CommitPlan, message?: string): Promise<string> {
     const head = (await this.execOk(['rev-parse', 'HEAD'], 'git rev-parse HEAD')).trim();
     if (plan.files.length === 0) return head;
     let tree: string;
@@ -203,7 +204,7 @@ export class Git {
       GIT_COMMITTER_NAME: 'logis-pr',
       GIT_COMMITTER_EMAIL: 'logis-pr@localhost',
     };
-    return this.execOk(['commit-tree', tree.trim(), '-p', head, '-m', 'logis-pr conflict check'], 'git commit-tree', {
+    return this.execOk(['commit-tree', tree.trim(), '-p', head, '-m', message ?? 'logis-pr conflict check'], 'git commit-tree', {
       env: identity,
     });
   }
@@ -213,7 +214,25 @@ export class Git {
    * Exit 0 = bersih, 1 + tree id = konflik, lainnya = error.
    */
   async mergeCheck(base: string, commit: string): Promise<MergeCheck> {
-    const res = await this.exec(['merge-tree', '--write-tree', '--name-only', '--no-messages', base, commit]);
+    return this.mergeTree(base, commit);
+  }
+
+  /**
+   * Seperti mergeCheck, tetapi objek hasil merge ditulis ke folder sementara yang langsung dihapus, sehingga
+   * tidak ada objek baru di repo (dipakai --audit). Objek repo tetap terbaca lewat alternates.
+   */
+  async mergeCheckReadOnly(base: string, commit: string): Promise<MergeCheck> {
+    const objects = path.resolve(this.cwd, await this.execOk(['rev-parse', '--git-path', 'objects'], 'git rev-parse --git-path'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'logis-pr-obj-'));
+    try {
+      return await this.mergeTree(base, commit, { GIT_OBJECT_DIRECTORY: dir, GIT_ALTERNATE_OBJECT_DIRECTORIES: objects });
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private async mergeTree(base: string, commit: string, env?: NodeJS.ProcessEnv): Promise<MergeCheck> {
+    const res = await this.exec(['merge-tree', '--write-tree', '--name-only', '--no-messages', base, commit], { env });
     const parsed = parseMergeTree(res.code, res.stdout);
     if (parsed) return parsed;
     const detail = (res.stderr || res.stdout).trim();
@@ -341,6 +360,39 @@ export class Git {
     const files: Array<{ status: string; path: string }> = [];
     for (let i = 0; i + 1 < parts.length; i += 2) files.push({ status: parts[i] ?? '', path: parts[i + 1] ?? '' });
     return files;
+  }
+
+  /**
+   * Commit non-merge di `include ^exclude...` yang menyentuh salah satu `files`, dicicil per 50 path.
+   * --full-history wajib: tanpanya git membuang sisi merge yang hasilnya TREESAME ke parent lain.
+   * Path dibaca harfiah (GIT_LITERAL_PATHSPECS), jadi nama seperti `[id].ts` tidak dianggap glob.
+   */
+  async commitsTouching(include: string, exclude: readonly string[], files: readonly string[]): Promise<Array<{ sha: string; message: string }>> {
+    const found = new Map<string, string>();
+    for (let i = 0; i < files.length; i += 50) {
+      const raw = await this.execOk(
+        ['log', '--no-merges', '--full-history', '--format=%H%x1f%B%x1e', include, ...exclude.map((e) => `^${e}`), '--', ...files.slice(i, i + 50)],
+        'git log -- <file>',
+        { env: { GIT_LITERAL_PATHSPECS: '1' } },
+      );
+      for (const rec of raw.split('\x1e')) {
+        const [sha = '', message = ''] = rec.replace(/^\n+/, '').split('\x1f');
+        if (sha.trim()) found.set(sha.trim(), message);
+      }
+    }
+    return [...found].map(([sha, message]) => ({ sha, message }));
+  }
+
+  /** Merge commit di `include ^exclude...`. */
+  async mergeCommits(include: string, exclude: readonly string[]): Promise<CommitMeta[]> {
+    const out = await this.execOk(['rev-list', '--merges', include, ...exclude.map((e) => `^${e}`), '--'], `git rev-list --merges ${include}`);
+    return this.commitMeta(out.split('\n').filter(Boolean));
+  }
+
+  /** File yang berubah di sisi yang di-merge (`M^1...M^2`): perubahan bersih PR, sejak merge-base-nya. */
+  async mergeSideFiles(sha: string): Promise<string[]> {
+    const out = await this.execOk(['diff', '--name-only', '-z', '--no-renames', `${sha}^1...${sha}^2`, '--'], 'git diff --name-only');
+    return out.split('\0').filter(Boolean);
   }
 
   /** SHA branch di remote tanpa fetch (read-only, lewat jaringan). */
