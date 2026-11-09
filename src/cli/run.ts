@@ -66,6 +66,11 @@ export interface RunOptions {
   dependent?: boolean;
   /** --depends-on: key tiket dipisah koma ('none' = tanpa dependensi); menimpa hasil deteksi. Hanya dengan --dependent. */
   dependsOn?: string;
+  /**
+   * false bila --no-baseline: branch integrasi dibuat dari ujung base (mis. development), bukan dari production,
+   * sehingga PR hanya berisi commit tiket tanpa baseline production (ADR 0003).
+   */
+  baseline?: boolean;
 }
 
 export type GitLike = Pick<
@@ -183,6 +188,8 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   const { config, git, gh, log } = deps;
   const dry = Boolean(opts.dryRun);
   const dependent = Boolean(opts.dependent);
+  const noBaseline = opts.baseline === false;
+  const integrationFrom = noBaseline ? 'base' : 'production';
   if (dry) {
     log.info('Mode --dry-run: tidak ada commit, branch baru, push, PR, transisi Jira, maupun pesan Teams.');
     log.dim('  Mutasi git yang tetap terjadi: git fetch (remote-tracking refs) dan objek sementara untuk simulasi');
@@ -276,6 +283,11 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
 
   // Target PR: -b menang; branch hotfix memilih production/development; selain itu development.
   const hotfix = isHotfixBranch(branch, splitList(config.hotfixPrefixes));
+  if (dependent && noBaseline) {
+    throw new CliError('--no-baseline tidak bisa digabung dengan --dependent.', {
+      hint: '--dependent membuka PR langsung dari branch tiket (tanpa branch integrasi), jadi tidak ada baseline production yang ikut. Pilih salah satu.',
+    });
+  }
   if (dependent) {
     const rejected = dependentRejections({
       branch,
@@ -328,6 +340,17 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   log.ok(`Repo ${repoFull} · branch tiket ${branch} · tiket ${ticketKey}`);
   log.ok(`PR: ${bases.map((b) => `${headFor(b)} → ${b}`).join(', ')}`);
   if (dependent) log.info(`Mode --dependent: branch tiket berbasis ${dev}, tanpa branch integrasi. Tiket ini belum bisa naik ke ${prod}.`);
+  if (noBaseline) {
+    const viaIntegration = bases.filter((b) => b !== prod);
+    if (viaIntegration.length) {
+      log.info(
+        `Mode --no-baseline: ${viaIntegration.map((b) => `'${integrationFor(b)}' dibuat dari ${R}/${b}`).join(', ')}; ` +
+          `PR hanya berisi commit tiket, tanpa commit ${prod} yang belum ada di target.`,
+      );
+    } else {
+      log.warn(`--no-baseline tidak berpengaruh: tidak ada PR lewat branch integrasi (target hanya ${prod}).`);
+    }
+  }
 
   const missing = missingFields(config, { jira: opts.jira, teams: opts.teams });
   if (missing.length > 0) {
@@ -554,13 +577,18 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
         continue;
       }
       const name = integrationFor(b);
-      const ip = await planIntegration(git, ctx, t, b, name);
+      const iopts = { from: integrationFrom } as const;
+      const ip = await planIntegration(git, ctx, t, b, name, iopts);
       if (ip.problems.length) {
+        const carriesBaseline = ip.problems.some((p) => p.kind === 'integration-baseline');
         stopProblems(
           `BRANCH INTEGRASI '${name}' TIDAK BERSIH`,
           ip.problems,
-          `logis-pr tidak menimpa/menghapus branch. Periksa isinya: git log --oneline ${R}/${prod}..${name}\n` +
-            `Bila memang salah, ganti nama branch lama (git branch -m ${name} ${name}-old) lalu jalankan lagi.`,
+          `logis-pr tidak menimpa/menghapus branch. Periksa isinya: git log --oneline ${R}/${noBaseline ? b : prod}..${name}\n` +
+            (carriesBaseline
+              ? `'${name}' yang ada dibuat dari ${prod} (tanpa --no-baseline). Untuk --no-baseline, ganti nama branch lama ` +
+                `(git branch -m ${name} ${name}-old) lalu jalankan lagi; bila sudah ada di remote dan PR-nya terbuka, tutup PR itu dan hapus branch remote-nya secara manual.`
+              : `Bila memang salah, ganti nama branch lama (git branch -m ${name} ${name}-old) lalu jalankan lagi.`),
         );
       }
       if (ip.toPick.length === 0 && !ip.existed) {
@@ -576,35 +604,49 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       }
       ip.start = fromBase && pick.ok ? (ip.baseStart as string) : ip.start;
       if (!pick.ok) {
+        const onto = ip.existed ? name : noBaseline || fromBase ? `ujung ${R}/${b}` : `titik awal branch tiket di ${prod}`;
         big([
           `CHERRY-PICK KE '${name}' KONFLIK`,
-          `Commit ${pick.failedAt.slice(0, 7)} tidak bisa diterapkan di atas ${ip.existed ? name : fromBase ? `ujung ${b}` : `titik awal branch tiket di ${prod}`}:`,
+          `Commit ${pick.failedAt.slice(0, 7)} tidak bisa diterapkan di atas ${onto}:`,
           ...pick.files.slice(0, 15).map((f) => `  ${f}`),
           'Simulasi dilakukan di worktree sementara; branch tiket & branch integrasi tidak diubah.',
         ]);
-        throw new CliError('Dihentikan: cherry-pick ke branch integrasi konflik.', {
-          exitCode: 2,
-          hint: ip.existed
-            ? `Branch integrasi sudah berisi perubahan lain. Selesaikan manual: git switch ${name} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}`
-            : fromBase
-              ? `Commit tiket bertabrakan dengan perubahan di ${b} di luar tiket dasar. Selesaikan manual:\n` +
-                `  git switch -c ${name} ${R}/${b} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}\n` +
-                `Lalu jalankan logis-pr lagi.`
-              : `Laporkan ke maintainer logis-pr: commit tiket seharusnya bisa diputar ulang di titik awalnya.`,
-        });
+        let hint: string;
+        if (ip.existed) {
+          hint = `Branch integrasi sudah berisi perubahan lain. Selesaikan manual: git switch ${name} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}`;
+        } else if (noBaseline) {
+          // File tiket di target berbeda dengan di production: konflik ini milik tiket sendiri, selesaikan di -dev.
+          const pending = pick.failedAt === snapshot;
+          const shas = ip.toPick.map((c) => (c.sha === snapshot ? '<sha commit baru>' : c.short)).join(' ');
+          hint =
+            (pending ? `Commit perubahan Anda dulu (git commit -m "..."), lalu ` : '') +
+            `selesaikan konflik di branch integrasi (dari ${R}/${b}):\n` +
+            `  git switch -c ${name} ${R}/${b}\n` +
+            `  git cherry-pick -x ${shas}   → selesaikan konflik → git add <file> → git cherry-pick --continue\n` +
+            `  git switch ${branch}\n` +
+            `Lalu jalankan logis-pr --no-baseline lagi (tanpa -m). Branch integrasi yang ada dipakai ulang.`;
+        } else if (fromBase) {
+          hint =
+            `Commit tiket bertabrakan dengan perubahan di ${b} di luar tiket dasar. Selesaikan manual:\n` +
+            `  git switch -c ${name} ${R}/${b} && git cherry-pick -x ${pick.failedAt.slice(0, 7)}\n` +
+            `Lalu jalankan logis-pr lagi.`;
+        } else {
+          hint = `Laporkan ke maintainer logis-pr: commit tiket seharusnya bisa diputar ulang di titik awalnya.`;
+        }
+        throw new CliError('Dihentikan: cherry-pick ke branch integrasi konflik.', { exitCode: 2, hint });
       }
-      const post = await validateIntegrationTip(git, ctx, t, b, name, pick.sha);
+      const post = await validateIntegrationTip(git, ctx, t, b, name, pick.sha, iopts);
       if (post.length) stopProblems(`HASIL CHERRY-PICK '${name}' TIDAK BERSIH`, post, 'Laporkan ke maintainer logis-pr.');
       const conflict = await git.mergeCheck(`${R}/${b}`, pick.sha);
       if (!conflict.clean) await stopConflict(b, name, conflict.conflicts);
-      const report = await validatePrDiff(git, ctx, t, b, pick.sha);
+      const report = await validatePrDiff(git, ctx, t, b, pick.sha, iopts);
       if (report.problems.length) stopProblems(`ISI PR ${name} → ${b} TIDAK BERSIH`, report.problems, ticketHint);
       out.push({ base: b, head: name, tip: pick.sha, plan: ip, report });
     }
     return out;
   };
   const stopConflict = async (b: string, head: string, files: string[]): Promise<never> => {
-    const unsynced = b === prod || dependent ? [] : await git.commitsBetween(`${R}/${prod}`, [`${R}/${b}`]);
+    const unsynced = b === prod || dependent || noBaseline ? [] : await git.commitsBetween(`${R}/${prod}`, [`${R}/${b}`]);
     big([
       'KONFLIK — PROSES DIHENTIKAN',
       `Merge ${head} → ${b} akan konflik di ${files.length} file:`,
@@ -627,11 +669,18 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
           `Lalu jalankan logis-pr --dependent lagi. Merge dari ${R}/${b} diizinkan di mode ini.`
         : b === prod
           ? `Sinkronkan branch tiket dengan ${prod} (git merge ${R}/${prod}), selesaikan konflik, lalu jalankan lagi.`
-          : `Konflik khusus '${b}' diselesaikan di branch integrasi, BUKAN di branch tiket:\n` +
-            `  git switch ${integrationFor(b)}   (setelah logis-pr membuatnya, atau buat dari ${R}/${prod})\n` +
-            `  git merge ${R}/${b}   → selesaikan konflik → commit → git switch ${branch}\n` +
-            `Lalu jalankan logis-pr lagi. Branch tiket tetap bersih dari ${b}.` +
-            (unsynced.length ? `\nBila konflik dari commit ${prod} yang belum di-merge balik ke ${b}, minta lead menyinkronkan ${prod} → ${b} dulu.` : ''),
+          : noBaseline
+            ? `'${b}' berubah sejak simulasi. Jalankan logis-pr --no-baseline lagi; bila tetap konflik, ` +
+              `selesaikan di '${integrationFor(b)}' (git switch ${integrationFor(b)} && git merge ${R}/${b}).`
+            : `Konflik khusus '${b}' diselesaikan di branch integrasi, BUKAN di branch tiket:\n` +
+              `  git switch ${integrationFor(b)}   (setelah logis-pr membuatnya, atau buat dari ${R}/${prod})\n` +
+              `  git merge ${R}/${b}   → selesaikan konflik → commit → git switch ${branch}\n` +
+              `Lalu jalankan logis-pr lagi. Branch tiket tetap bersih dari ${b}.` +
+              (unsynced.length
+                ? `\nBila konflik dari commit ${prod} yang belum di-merge balik ke ${b} (bukan dari file tiket), jangan selesaikan konfliknya di PR ini:\n` +
+                  `  jalankan logis-pr --no-baseline${wantCommit ? ` -m "..."` : ''} → '${integrationFor(b)}' dibuat dari ${R}/${b}, PR hanya berisi commit tiket.\n` +
+                  `  Sinkronisasi ${prod} → ${b} tetap perlu dilakukan lead secara terpisah.`
+                : ''),
     });
   };
 
@@ -643,9 +692,11 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
       if (p) {
         const what = p.existed
           ? `perbarui '${p.name}'`
-          : p.start === p.baseStart
-            ? `buat '${p.name}' dari ujung ${t.base} (commit dasarnya sudah ada di ${t.base})`
-            : `buat '${p.name}' dari ${prod} (titik awal branch tiket)`;
+          : p.from === 'base'
+            ? `buat '${p.name}' dari ${R}/${p.base} (--no-baseline)`
+            : p.start === p.baseStart
+              ? `buat '${p.name}' dari ujung ${t.base} (commit dasarnya sudah ada di ${t.base})`
+              : `buat '${p.name}' dari ${prod} (titik awal branch tiket)`;
         log.ok(`${what}: ${p.toPick.length} commit di-cherry-pick, ${p.present.length} sudah ada${p.inBase.length ? `, ${p.inBase.length} sudah ada di ${t.base}` : ''}`);
       }
       const r = t.report;
