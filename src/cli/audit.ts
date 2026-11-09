@@ -18,6 +18,8 @@ import type { GitHubLike, GitLike } from './run.js';
 export interface AuditOptions {
   ticket?: string;
   base?: string;
+  /** false bila --no-baseline: branch integrasi diharapkan berbasis target, tanpa baseline production. */
+  baseline?: boolean;
 }
 
 export interface AuditResult {
@@ -39,6 +41,7 @@ export async function runAudit(
   const R = config.remote;
   const prod = config.productionBranch;
   const dev = config.baseBranch;
+  const iopts = { from: opts.baseline === false ? 'base' : 'production' } as const;
 
   log.info('Mode --audit: hanya membaca. Tidak ada fetch, commit, branch, push, maupun PR.');
   log.step('Repo');
@@ -74,6 +77,7 @@ export async function runAudit(
   log.plain(`Tiket             : ${ticketKey}${hotfix ? ' (hotfix)' : ''}`);
   log.plain(`Production        : ${R}/${prod}`);
   log.plain(`Target PR         : ${bases.map((b) => `${b === prod ? branch : integrationFor(b)} → ${b}`).join(', ')}`);
+  if (iopts.from === 'base') log.plain(`Branch integrasi  : dari ujung target (--no-baseline), tanpa baseline ${prod}`);
 
   log.step('Kesegaran data remote (ls-remote, tanpa fetch)');
   const watch = [...new Set([prod, ...envs, ...bases, branch, ...bases.filter((b) => b !== prod).map(integrationFor)])];
@@ -117,7 +121,7 @@ export async function runAudit(
     } else {
       headName = integrationFor(b);
       log.step(`Branch integrasi ${headName} → ${b}`);
-      const ip = await planIntegration(git, ctx, ticket, b, headName);
+      const ip = await planIntegration(git, ctx, ticket, b, headName, iopts);
       log.plain(
         `Status            : ${ip.existed ? `ada (lokal ${ip.local?.slice(0, 7) ?? '-'}, remote ${ip.remote?.slice(0, 7) ?? '-'})` : 'belum dibuat'}`,
       );
@@ -128,11 +132,15 @@ export async function runAudit(
           log.dim(`    Belum ada branch integrasi & branch tiket bermasalah: perkiraan isi PR dilewati.`);
           continue;
         }
+        if (iopts.from === 'base') {
+          log.dim(`    Belum ada branch integrasi; dengan --no-baseline isinya = ${b} + cherry-pick ${ip.toPick.length} commit tiket.`);
+          continue;
+        }
         log.dim(`    Belum ada branch integrasi; perbandingan PR di bawah memakai branch tiket sebagai perkiraan.`);
       } else {
         headSha = (ip.local && ip.remote && ip.local !== ip.remote ? ip.local : (ip.local ?? ip.remote)) as string;
       }
-      pr = await validatePrDiff(git, ctx, ticket, b, headSha);
+      pr = await validatePrDiff(git, ctx, ticket, b, headSha, iopts);
     }
     log.plain(`Commit di PR      : ${pr.ticket.length} tiket, ${pr.baseline.length} baseline ${prod}, ${pr.sync.length} merge sinkronisasi`);
     log.plain(`File berubah      : ${pr.files.length}`);
@@ -172,8 +180,9 @@ export async function runAudit(
 
   function finish(): AuditResult {
     log.step('Penilaian');
-    if (issues.length === 0) log.ok('AMAN: branch tiket & isi PR hanya berisi commit tiket (plus baseline production).');
-    else {
+    if (issues.length === 0) {
+      log.ok(`AMAN: branch tiket & isi PR hanya berisi commit tiket${iopts.from === 'base' ? '' : ' (plus baseline production)'}.`);
+    } else {
       log.fail(`TIDAK AMAN (${issues.length}):`);
       for (const i of issues) log.fail(`  ${i}`);
     }

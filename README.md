@@ -274,6 +274,7 @@ logis-pr init | doctor [--test-teams] | graph-login | graph-chats [-n nama]
 | `-y, --yes` | lewati semua konfirmasi (termasuk daftar commit tiket): Teams dikirim, file baru **tidak** ikut (pakai `-a` bila perlu) |
 | `--no-jira` | jangan pindahkan status tiket (summary tetap dibaca bila kredensial ada) |
 | `--no-teams` | jangan kirim pesan Teams |
+| `--no-baseline` | buat `LOGIS-XXXX-dev` dari target (mis. `development`), bukan dari production: PR hanya berisi commit tiket, tanpa commit production yang belum ada di target. Lihat [Production belum sinkron](#production-belum-sinkron-dengan-development---no-baseline) |
 | `--push-ticket` | push juga branch tiket walau PR-nya hanya lewat `LOGIS-XXXX-dev` (backup di remote; GitHub akan menampilkan notice *Compare & pull request*, abaikan) |
 | `--dry-run` | tampilkan semua yang AKAN dilakukan; tidak commit/branch/push/PR/transisi/pesan (hanya `git fetch`, disebutkan di output) |
 | `--audit` | periksa branch tiket, `-dev`, dan isi PR **tanpa mengubah apa pun** (tanpa fetch); exit 1 bila TIDAK AMAN |
@@ -305,6 +306,9 @@ logis-pr --dry-run -m "coba"
 
 # Periksa apakah branch & PR saya bersih (read-only)
 logis-pr --audit
+
+# production belum sinkron dengan development: PR ke development hanya berisi commit tiket
+logis-pr --no-baseline -m "ver:1.0.0 tkt:LOGIS-3964 msg:fix get JMP"
 ```
 
 Contoh output `--dry-run` (hasil nyata di repo uji):
@@ -406,6 +410,23 @@ Tiket: https://serasiautoraya.atlassian.net/browse/LOGIS-3944
 
 **Catatan baseline:** bila `production` punya commit yang belum ada di `development` (hotfix lama belum di-merge balik), commit itu ikut tampil di PR `-dev` sebagai baseline dan ditandai di output.
 
+### Production belum sinkron dengan development (`--no-baseline`)
+
+Bila baseline itu bentrok dengan `development` (mis. `production` berisi revert fitur yang masih dipakai di `development`), logis-pr berhenti dengan **KONFLIK** di file yang tidak disentuh tiket. Jangan selesaikan konflik itu di `-dev`: hasilnya ikut menerapkan revert ke `development`, termasuk di file yang tidak konflik.
+
+```text
+logis-pr --no-baseline -m "pesan commit"
+```
+
+- Branch tiket **tetap** dari `production` dan divalidasi seperti biasa, jadi fix tetap bisa naik ke `production` dari branch yang sama.
+- `LOGIS-XXXX-dev` dibuat dari ujung `origin/development` + `cherry-pick -x` commit tiket. PR hanya berisi commit dan file tiket.
+- Commit `production` atau merge dari `production` di `-dev` ditolak. `-dev` lama yang dibuat tanpa flag ini juga ditolak; ganti namanya (`git branch -m LOGIS-XXXX-dev LOGIS-XXXX-dev-old`) lalu jalankan lagi.
+- Bila file tiket sendiri berbeda di `development`, cherry-pick konflik (exit 2). Ikuti saran di output: buat `-dev` dari `origin/development`, `git cherry-pick -x`, selesaikan konflik, lalu jalankan `logis-pr --no-baseline` lagi.
+- Tidak bisa digabung dengan `--dependent`. `--audit --no-baseline` memeriksa dengan aturan yang sama.
+- Sinkronisasi `production → development` tetap perlu dilakukan lead secara terpisah.
+
+Latar belakang: [ADR 0003](docs/adr/0003-integration-branch-from-target.md).
+
 ### Audit (`--audit`)
 
 ![Audit read-only](docs/images/06-audit.png)
@@ -504,6 +525,9 @@ Catatan pengiriman disimpan di `~/.logis-pr-state.json` (per mesin).
 
 **"merge sedang berjalan"**
 - Ada `git merge`/`cherry-pick`/`rebase` yang belum selesai. logis-pr tidak menyelesaikan maupun meng-abort-nya. Batalkan sendiri (`git merge --abort`) atau selesaikan, periksa `git status`, lalu jalankan lagi.
+
+**KONFLIK di file yang tidak disentuh tiket, dengan catatan "production punya N commit yang belum ada di development"**
+- Konflik berasal dari baseline production, bukan dari tiket. Pakai `logis-pr --no-baseline` (lihat [Production belum sinkron](#production-belum-sinkron-dengan-development---no-baseline)) dan minta lead menyinkronkan production → development.
 
 **"BRANCH INTEGRASI 'LOGIS-XXXX-dev' TIDAK BERSIH" / bercabang**
 - `-dev` berisi commit selain cherry-pick commit tiket, atau lokal & remote berbeda arah. logis-pr tidak menimpa/menghapus branch. Periksa: `git log --oneline origin/production..LOGIS-1234-dev`. Bila memang salah: `git branch -m LOGIS-1234-dev LOGIS-1234-dev-old`, hapus branch remote secara manual bila perlu, lalu jalankan lagi.

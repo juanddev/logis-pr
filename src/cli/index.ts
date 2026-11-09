@@ -34,6 +34,8 @@ Contoh:
   logis-pr --audit                                    periksa branch & isi PR, hanya membaca
   logis-pr --dependent -m "lanjutan"                  tiket bergantung pada kode development: PR langsung ke development
   logis-pr --dependent --depends-on LOGIS-3931        tentukan dependensi sendiri ('none' = tanpa dependensi)
+  logis-pr --no-baseline -m "fix"                     production belum sinkron dengan development: -dev dibuat dari development,
+                                                      PR hanya berisi commit tiket
   logis-pr init                                       buat/ubah ~/.logis-pr.json
   logis-pr doctor                                     cek git, gh, config, Jira, Teams
 `;
@@ -53,6 +55,7 @@ interface CliOptions {
   pushTicket?: boolean;
   dependent?: boolean;
   dependsOn?: string;
+  baseline: boolean;
 }
 
 async function commandRun(opts: CliOptions): Promise<void> {
@@ -64,7 +67,7 @@ async function commandRun(opts: CliOptions): Promise<void> {
     const gh = new GitHub(runCommand);
     const auth = await gh.authStatus().catch(() => ({ ok: false, detail: '' }));
     if (!auth.ok) log.warn('gh belum login: pemeriksaan PR di GitHub dilewati.');
-    const res = await runAudit({ ticket: opts.ticket, base: opts.base }, { config, git: new Git(runCommand), gh: auth.ok ? gh : null, log });
+    const res = await runAudit({ ticket: opts.ticket, base: opts.base, baseline: opts.baseline }, { config, git: new Git(runCommand), gh: auth.ok ? gh : null, log });
     process.exitCode = res.safe ? 0 : 1;
     return;
   }
@@ -117,6 +120,10 @@ function buildProgram(): Command {
     .option('--push-ticket', 'push juga branch tiket walau PR-nya hanya lewat LOGIS-XXXX-dev (backup di remote)')
     .option('--dependent', 'tiket bergantung pada kode development: branch berbasis development, PR langsung ke development (tanpa branch integrasi)')
     .option('--depends-on <keys>', "tiket dependensi, dipisah koma, menimpa hasil deteksi ('none' = tanpa dependensi); hanya dengan --dependent")
+    .option(
+      '--no-baseline',
+      'buat LOGIS-XXXX-dev dari target (mis. development), bukan dari production: PR hanya berisi commit tiket, tanpa commit production yang belum ada di target',
+    )
     .option('--dry-run', 'simulasi lengkap tanpa commit/branch/push/PR/transisi/pesan (hanya git fetch)')
     .option('--audit', 'periksa branch tiket, branch integrasi, dan isi PR — hanya membaca, tanpa fetch')
     .showHelpAfterError('(jalankan "logis-pr --help" untuk bantuan)')

@@ -44,7 +44,23 @@ export type Problem =
   | { kind: 'pr-unexpected-commit'; commit: CommitMeta; base: string }
   | { kind: 'pr-unexpected-file'; file: string; status: string; base: string }
   | { kind: 'dependent-no-ticket'; commit: CommitMeta; ticketKey: string }
-  | { kind: 'dependent-merge'; commit: CommitMeta; base: string };
+  | { kind: 'dependent-merge'; commit: CommitMeta; base: string }
+  | { kind: 'integration-baseline'; commit: CommitMeta; branch: string; prod: string }
+  | { kind: 'pr-baseline'; commit: CommitMeta; base: string; prod: string };
+
+/**
+ * Basis branch integrasi:
+ *  - `production` (default, ADR 0001): `-dev` dibuat dari titik awal branch tiket di production; commit production
+ *    yang belum ada di base ikut ke PR sebagai baseline.
+ *  - `base` (`--no-baseline`, ADR 0003): `-dev` dibuat dari ujung base (mis. development); PR hanya berisi
+ *    cherry-pick commit tiket. Sinkronisasi production → base tetap tugas terpisah.
+ */
+export type IntegrationBase = 'production' | 'base';
+
+export interface IntegrationOptions {
+  /** Default 'production'. */
+  from?: IntegrationBase;
+}
 
 export interface TicketAnalysis {
   head: string;
@@ -186,8 +202,15 @@ export async function analyzeTicket(git: GitReader, ctx: IsolationContext, head:
 export interface IntegrationPlan {
   name: string;
   base: string;
-  /** Commit awal untuk cherry-pick: ujung branch integrasi yang ada, atau ujung production. */
+  /** Basis branch integrasi (lihat IntegrationBase). */
+  from: IntegrationBase;
+  /** Commit awal untuk cherry-pick: ujung branch integrasi yang ada, titik awal branch tiket, atau ujung base. */
   start: string;
+  /**
+   * Titik awal cadangan (ujung base) untuk -dev baru, bila commit tiket yang sudah ada di base mendahului
+   * commit yang di-pick. Dipakai hanya bila replay dari `start` konflik.
+   */
+  baseStart: string | null;
   local: string | null;
   remote: string | null;
   existed: boolean;
@@ -206,6 +229,8 @@ export interface IntegrationPlan {
  * Klasifikasi commit di branch integrasi (di luar production & base). Yang boleh hanya:
  *  - cherry-pick commit tiket (dikenali dari trailer `-x` atau patch-id), dan
  *  - merge yang hanya membawa isi base/production (penyelesaian konflik eksplisit oleh developer).
+ * Dengan `from: 'base'` yang diperiksa adalah semua commit di luar base, dan isi production tidak boleh ada:
+ * commit baseline maupun merge dari production ditolak (itu yang membuat PR membawa baseline).
  */
 async function classifyIntegration(
   git: GitReader,
@@ -214,10 +239,12 @@ async function classifyIntegration(
   base: string,
   branch: string,
   ticket: TicketAnalysis,
+  from: IntegrationBase,
 ): Promise<{ represented: Set<string>; problems: Problem[] }> {
   const prodRef = refOf(ctx, ctx.prod);
   const baseRef = refOf(ctx, base);
-  const metas = await git.commitMeta(await git.revList(tip, [prodRef, baseRef]));
+  const fromBase = from === 'base';
+  const metas = await git.commitMeta(await git.revList(tip, fromBase ? [baseRef] : [prodRef, baseRef]));
   const ticketShas = ticket.commits.map((c) => c.sha);
   const ticketPids = invert(await git.patchIdsOf(ticketShas));
   const nonMerge = metas.filter((m) => m.parents.length < 2);
@@ -228,9 +255,15 @@ async function classifyIntegration(
     if (m.parents.length >= 2) {
       let ok = true;
       for (const p of m.parents.slice(1)) {
-        if (!(await git.isAncestor(p, baseRef)) && !(await git.isAncestor(p, prodRef))) ok = false;
+        if (await git.isAncestor(p, baseRef)) continue;
+        if (!fromBase && (await git.isAncestor(p, prodRef))) continue;
+        ok = false;
       }
       if (!ok) problems.push({ kind: 'integration-foreign', commit: m, branch });
+      continue;
+    }
+    if (fromBase && (await git.isAncestor(m.sha, prodRef))) {
+      problems.push({ kind: 'integration-baseline', commit: m, branch, prod: ctx.prod });
       continue;
     }
     const bySource = cherryPickSources(m.body)
@@ -248,14 +281,20 @@ async function classifyIntegration(
   return { represented, problems };
 }
 
-/** Rencanakan isi branch integrasi `name` (dari production) untuk PR ke `base`. Tidak mengubah apa pun. */
+/**
+ * Rencanakan isi branch integrasi `name` untuk PR ke `base`. Tidak mengubah apa pun.
+ * Default dari production (titik awal branch tiket); `from: 'base'` dari ujung base.
+ */
 export async function planIntegration(
   git: GitReader,
   ctx: IsolationContext,
   ticket: TicketAnalysis,
   base: string,
   name: string,
+  opts: IntegrationOptions = {},
 ): Promise<IntegrationPlan> {
+  const from = opts.from ?? 'production';
+  const fromBase = from === 'base';
   const prodRef = refOf(ctx, ctx.prod);
   const baseRef = refOf(ctx, base);
   const problems: Problem[] = [];
@@ -282,14 +321,15 @@ export async function planIntegration(
 
   let represented = new Set<string>();
   if (tip) {
-    const cls = await classifyIntegration(git, ctx, tip, base, name, ticket);
+    const cls = await classifyIntegration(git, ctx, tip, base, name, ticket, from);
     represented = cls.represented;
     problems.push(...cls.problems);
   }
 
   // Branch tiket yang pernah disinkronkan dengan production diputar ulang utuh (resolusi konfliknya ikut),
   // jadi commit yang sudah ada di base tidak dilewati agar isi tiap langkah identik dengan branch tiket.
-  const faithful = !tip && ticket.syncMerges.length > 0;
+  // Dari base, merge sinkronisasi production tidak diputar ulang (justru itu baseline yang dihindari).
+  const faithful = !fromBase && !tip && ticket.syncMerges.length > 0;
   const inBaseSet = new Set(faithful ? [] : inBase.map((c) => c.sha));
   const present = ticket.commits.filter((c) => represented.has(c.sha));
   const toPick = ticket.commits.filter((c) => !represented.has(c.sha) && !inBaseSet.has(c.sha));
@@ -299,7 +339,7 @@ export async function planIntegration(
   for (const m of ticket.order) {
     if (pickSet.has(m.sha)) {
       steps.push({ kind: 'pick', sha: m.sha });
-    } else if (syncSet.has(m.sha)) {
+    } else if (!fromBase && syncSet.has(m.sha)) {
       const extra = m.parents.slice(1);
       let needed = true;
       if (tip) {
@@ -312,10 +352,20 @@ export async function planIntegration(
     }
   }
   if (!steps.some((s) => s.kind === 'pick')) steps.length = 0;
-  // Branch integrasi baru dimulai dari titik awal branch tiket di production (bukan ujung production
+  // Default: branch integrasi baru dimulai dari titik awal branch tiket di production (bukan ujung production
   // terbaru), sehingga cherry-pick diterapkan di atas isi yang sama seperti saat commit dibuat.
-  const start = tip ?? ticket.forkPoint;
-  return { name, base, start, local, remote, existed: Boolean(tip), toPick, steps, present, inBase, problems };
+  // Tiket bertumpuk (mis. LOGIS-3946 di atas LOGIS-3943 yang sudah di development): commit yang dilewati
+  // karena sudah ada di base bisa jadi dasar commit yang di-pick, sehingga dari titik awal production pick
+  // itu konflik. Untuk kasus itu disiapkan `baseStart` (ujung base, yang sudah memuat isinya) sebagai
+  // titik awal cadangan; PR tetap hanya berisi commit yang di-pick. Tidak perlu bila sudah dari base.
+  let baseStart: string | null = null;
+  if (!fromBase && !tip && inBaseSet.size > 0 && pickSet.size > 0) {
+    const firstPick = ticket.order.findIndex((m) => pickSet.has(m.sha));
+    if (ticket.order.some((m, i) => i < firstPick && inBaseSet.has(m.sha))) baseStart = await git.resolve(baseRef);
+  }
+  // Dari base: dimulai dari ujung base, sehingga PR hanya berisi cherry-pick commit tiket.
+  const start = tip ?? (fromBase ? ((await git.resolve(baseRef)) ?? baseRef) : ticket.forkPoint);
+  return { name, base, from, start, baseStart, local, remote, existed: Boolean(tip), toPick, steps, present, inBase, problems };
 }
 
 /** Validasi ulang ujung branch integrasi hasil cherry-pick (post-condition sebelum ref diperbarui). */
@@ -326,8 +376,9 @@ export async function validateIntegrationTip(
   base: string,
   name: string,
   tip: string,
+  opts: IntegrationOptions = {},
 ): Promise<Problem[]> {
-  return (await classifyIntegration(git, ctx, tip, base, name, ticket)).problems;
+  return (await classifyIntegration(git, ctx, tip, base, name, ticket, opts.from ?? 'production')).problems;
 }
 
 export interface PrDiffReport {
@@ -344,6 +395,7 @@ export interface PrDiffReport {
  * Validasi isi PR seperti yang akan dihitung GitHub: commit `base..head` dan file `base...head`.
  * Setiap commit harus: commit tiket (atau cherry-pick-nya), baseline production yang belum ada di base,
  * atau merge sinkronisasi. Setiap file harus berasal dari commit-commit tersebut.
+ * Dengan `from: 'base'` baseline production dan merge dari production tidak diizinkan.
  */
 export async function validatePrDiff(
   git: GitReader,
@@ -351,7 +403,9 @@ export async function validatePrDiff(
   ticket: TicketAnalysis,
   base: string,
   head: string,
+  opts: IntegrationOptions = {},
 ): Promise<PrDiffReport> {
+  const fromBase = opts.from === 'base';
   const prodRef = refOf(ctx, ctx.prod);
   const baseRef = refOf(ctx, base);
   const metas = await git.commitMeta(await git.revList(head, [baseRef]));
@@ -362,12 +416,14 @@ export async function validatePrDiff(
   const pids = await git.patchIdsOf(nonMerge.map((m) => m.sha));
 
   const report: PrDiffReport = { base, head, ticket: [], baseline: [], sync: [], files: [], problems: [] };
-  const syncShas = new Set(ticket.syncMerges.map((m) => m.sha));
+  const syncShas = new Set(fromBase ? [] : ticket.syncMerges.map((m) => m.sha));
   for (const m of metas) {
     if (m.parents.length >= 2) {
       let ok = true;
       for (const p of m.parents.slice(1)) {
-        if (!(await git.isAncestor(p, baseRef)) && !(await git.isAncestor(p, prodRef))) ok = false;
+        if (await git.isAncestor(p, baseRef)) continue;
+        if (!fromBase && (await git.isAncestor(p, prodRef))) continue;
+        ok = false;
       }
       if (ok || syncShas.has(m.sha)) report.sync.push(m);
       else report.problems.push({ kind: 'pr-unexpected-commit', commit: m, base });
@@ -382,7 +438,8 @@ export async function validatePrDiff(
     if (fromTicket || (pid && ticketPids.has(pid))) {
       report.ticket.push(m);
     } else if (await git.isAncestor(m.sha, prodRef)) {
-      report.baseline.push(m);
+      if (fromBase) report.problems.push({ kind: 'pr-baseline', commit: m, base, prod: ctx.prod });
+      else report.baseline.push(m);
     } else {
       report.problems.push({ kind: 'pr-unexpected-commit', commit: m, base });
     }
@@ -437,6 +494,12 @@ export function describeProblems(problems: readonly Problem[], max = 8): string[
         break;
       case 'dependent-merge':
         add(`Merge commit yang membawa history selain '${p.base}':`, `${p.commit.short} ${p.commit.subject}`);
+        break;
+      case 'integration-baseline':
+        add(`Commit '${p.prod}' (baseline) di '${p.branch}' — tidak boleh dengan --no-baseline:`, `${p.commit.short} ${p.commit.subject}`);
+        break;
+      case 'pr-baseline':
+        add(`Commit '${p.prod}' (baseline) di PR ke '${p.base}' — tidak boleh dengan --no-baseline:`, `${p.commit.short} ${p.commit.subject}`);
         break;
     }
   }
