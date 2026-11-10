@@ -674,13 +674,19 @@ describe('--dependent: dependensi di output, body PR, dan Teams', () => {
     expect(res.teams).toBe('sent');
   });
 
-  it('Teams: baris Depends on setelah Tiket, tidak terkirim ulang dengan -y, kunci state tetap URL PR', async () => {
+  it('Teams: format standar walau ada dependensi, tidak terkirim ulang dengan -y, kunci state tetap URL PR', async () => {
     const w = world({ files: { 'dev1.ts': 'punya tiket\n' } });
     const res = await runPr(opts, w.deps());
-    const text = w.state.teams[0]?.text ?? '';
-    expect(text.split('\n').at(-1)).toBe('Depends on: LOGIS-371');
-    expect(text.split('\n').at(-2)).toMatch(/^Tiket: /);
-    expect(w.state.teams[0]?.html).toContain('<br>Depends on: LOGIS-371');
+    expect(res.dependsOn).toEqual(['LOGIS-371']);
+    const lines = (w.state.teams[0]?.text ?? '').split('\n');
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/^Task: Review PR LOGIS-\d+$/);
+    expect(lines[1]).toMatch(/^Desc: /);
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe(`PR: ${res.prUrl}`);
+    expect(lines[4]).toMatch(/^Tiket: /);
+    expect(w.state.teams[0]?.text).not.toContain('Depends on');
+    expect(w.state.teams[0]?.html).not.toContain('Depends on');
     expect([...w.state.notified.keys()]).toEqual([res.prUrl]);
     const again = await runPr({ ...opts, message: undefined }, w.deps());
     expect(again.teams).toBe('already-sent');
@@ -709,7 +715,8 @@ describe('--dependent: dependensi di output, body PR, dan Teams', () => {
     expect(w.output()).toMatch(/Dependensi terdeteksi .*LOGIS-371/);
     expect(w.output()).toMatch(/\[dry-run\] PR baru akan memuat bagian depends-on: LOGIS-371/);
     expect(w.output()).toContain(`[dry-run] Akan membuat PR ${BRANCH} → development`);
-    expect(w.output()).toContain('Depends on: LOGIS-371');
+    // Preview pesan Teams memakai format standar (tanpa baris Depends on).
+    expect(w.output()).not.toContain('Depends on:');
     expect(w.gitCalls.some((a) => a.includes('push'))).toBe(false);
   });
 
@@ -729,7 +736,7 @@ describe('--depends-on menimpa hasil deteksi', () => {
   const detected = { files: { 'dev1.ts': 'punya tiket\n' } }; // tanpa override: LOGIS-371
   const ranDetection = (w: World) => w.gitCalls.some((a) => a.includes('--full-history'));
 
-  it('dengan commit -m: hasil, body PR, dan Teams hanya memuat override; deteksi tidak dijalankan', async () => {
+  it('dengan commit -m: hasil & body PR hanya memuat override, Teams tetap format standar; deteksi tidak dijalankan', async () => {
     const w = world(detected);
     const res = await runPr({ ...opts, dependsOn: 'logis-3944, 3931' }, w.deps());
     expect(res.committed).toBe(true);
@@ -737,7 +744,8 @@ describe('--depends-on menimpa hasil deteksi', () => {
     expect(section(w.github.prs[0]?.body)).toContain('[LOGIS-3931]');
     expect(section(w.github.prs[0]?.body)).toContain('[LOGIS-3944]');
     expect(section(w.github.prs[0]?.body)).not.toContain('LOGIS-371');
-    expect(w.state.teams[0]?.text.split('\n').at(-1)).toBe('Depends on: LOGIS-3931, LOGIS-3944');
+    expect(w.state.teams[0]?.text.split('\n').at(-1)).toMatch(/^Tiket: /);
+    expect(w.state.teams[0]?.text).not.toContain('Depends on');
     expect(w.github.edits).toHaveLength(0);
     expect(ranDetection(w)).toBe(false);
     expect(w.output()).toContain('Dependensi dari --depends-on (deteksi dilewati): LOGIS-3931, LOGIS-3944');
@@ -779,7 +787,7 @@ describe('--depends-on menimpa hasil deteksi', () => {
     expect(localState(w.fx)).toBe(before);
     expect(w.github.prs).toHaveLength(0);
     expect(w.output()).toContain('[dry-run] PR baru akan memuat bagian depends-on: LOGIS-3931');
-    expect(w.output()).toContain('Depends on: LOGIS-3931');
+    expect(w.output()).not.toContain('Depends on:');
   });
 
   it.each([

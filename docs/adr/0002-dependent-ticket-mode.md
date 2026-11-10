@@ -65,7 +65,7 @@ Yang tetap sama: commit bayangan, simulasi `merge-tree` (konflik → exit 2), ko
 ### Catatan dependensi
 
 - **Body PR:** satu bagian di antara `<!-- logis-pr:depends-on:start -->` dan `<!-- logis-pr:depends-on:end -->`. Teks di luar penanda tidak disentuh, termasuk CRLF yang disimpan GitHub setelah body diedit di web. Isi sama → tidak ada request edit. Body dikirim via stdin lewat REST API.
-- **Teams:** baris `Depends on: …` setelah baris `Tiket`. Kunci idempotensi state tidak berubah.
+- **Teams:** format pesan **tidak berubah** (sama persis dengan mode default, tanpa baris tambahan). Format pesan adalah kesepakatan tim, jadi dependensi cukup dicatat di body PR.
 - **Dependensi tidak lagi terdeteksi:** penanda dipertahankan dengan isi "Tidak ada dependensi terdeteksi", supaya catatan lama tidak menyesatkan dan teks di sekitarnya tidak terganggu.
 - **Penanda rusak** (tidak berpasangan atau ganda): body tidak disentuh, muncul warning. Di `--audit` menjadi TIDAK AMAN.
 
@@ -89,7 +89,7 @@ Bila validasi normal berhenti karena commit `development`/`staging`, commit tike
 
 **Positif**
 - Tiket bergantung bisa memakai alur penuh (validasi, PR, Jira, Teams), tidak lagi manual.
-- Ketergantungan tertulis di PR dan Teams, sehingga terlihat oleh reviewer dan lead.
+- Ketergantungan tertulis di body PR, sehingga terlihat oleh reviewer dan lead. Pesan Teams tetap memakai format standar tim.
 - Perilaku default tidak berubah.
 
 **Negatif / biaya**

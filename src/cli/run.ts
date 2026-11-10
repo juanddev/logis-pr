@@ -981,7 +981,7 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
   log.step(`[5/5] Teams → ${TEAMS_CHAT_NAME}`);
   const summary = issue?.summary?.trim() || stripTicketPrefix(prTitle, ticketKey);
   const desc = buildDesc(summary, service);
-  const message = buildTeamsMessage({ ticketKey, desc, prUrl, prs, ticketUrl: tUrl, dependsOn });
+  const message = buildTeamsMessage({ ticketKey, desc, prUrl, prs, ticketUrl: tUrl });
   const prUrls = prs.map((p) => p.url);
   const notifyKey = prUrls.join(' ');
 

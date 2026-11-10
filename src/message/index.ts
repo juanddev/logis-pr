@@ -116,8 +116,6 @@ export interface TeamsMessageInput {
   /** Lebih dari satu PR (hotfix ke production & development): `PR (<base>): <url>` per baris. */
   prs?: ReadonlyArray<{ base: string; url: string }>;
   ticketUrl: string;
-  /** Tiket yang menjadi dependensi (mode --dependent). Kosong = baris tidak ditambahkan. */
-  dependsOn?: readonly string[];
 }
 
 export interface TeamsMessage {
@@ -127,17 +125,19 @@ export interface TeamsMessage {
   html: string;
 }
 
+/**
+ * Format pesan Teams tetap sama di semua mode (termasuk --dependent): tidak ada baris tambahan.
+ * Catatan dependensi cukup di body PR (bagian depends-on).
+ */
 export function buildTeamsMessage(input: TeamsMessageInput): TeamsMessage {
   const prs = input.prs && input.prs.length > 1 ? input.prs : [{ base: '', url: input.prUrl }];
   const label = (base: string) => (base ? `PR (${base})` : 'PR');
-  const dependsOn = input.dependsOn?.length ? `Depends on: ${input.dependsOn.join(', ')}` : null;
   const text = [
     `Task: Review PR ${input.ticketKey}`,
     `Desc: ${input.desc}`,
     '',
     ...prs.map((p) => `${label(p.base)}: ${p.url}`),
     `Tiket: ${input.ticketUrl}`,
-    ...(dependsOn ? [dependsOn] : []),
   ].join('\n');
 
   const link = (url: string) => `<a href="${safeHref(url)}">${escapeHtml(url)}</a>`;
@@ -147,7 +147,6 @@ export function buildTeamsMessage(input: TeamsMessageInput): TeamsMessage {
     '',
     ...prs.map((p) => `${escapeHtml(label(p.base))}: ${link(p.url)}`),
     `Tiket: ${link(input.ticketUrl)}`,
-    ...(dependsOn ? [escapeHtml(dependsOn)] : []),
   ].join('<br>');
 
   return { text, html };
