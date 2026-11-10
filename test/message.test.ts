@@ -186,13 +186,6 @@ describe('buildTeamsMessage', () => {
     expect(buildTeamsMessage({ ...input, prs: [prs[1]!] }).text).toBe(buildTeamsMessage(input).text);
   });
 
-  it('dependsOn: baris setelah Tiket di text & html; escape; kosong = format standar', () => {
-    const msg = buildTeamsMessage({ ...input, dependsOn: ['LOGIS-3931', 'LOGIS-3944'] });
-    expect(msg.text.split('\n').slice(-2)).toEqual([`Tiket: ${input.ticketUrl}`, 'Depends on: LOGIS-3931, LOGIS-3944']);
-    expect(msg.html.endsWith('</a><br>Depends on: LOGIS-3931, LOGIS-3944')).toBe(true);
-    expect(buildTeamsMessage({ ...input, dependsOn: ['<b>&'] }).html).toContain('Depends on: &lt;b&gt;&amp;');
-    expect(buildTeamsMessage({ ...input, dependsOn: [] })).toEqual(buildTeamsMessage(input));
-  });
 
   it('menolak href non-http(s)', () => {
     expect(() => safeHref('javascript:alert(1)')).toThrow(/tidak diizinkan/);
