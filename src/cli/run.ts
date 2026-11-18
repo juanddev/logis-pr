@@ -27,6 +27,7 @@ import { prNumberFromUrl, type GitHub, type PullRequest } from '../github/index.
 import type { JiraClient, JiraIssue, TransitionStep } from '../jira/index.js';
 import {
   buildDesc,
+  commitDesc,
   buildPrBody,
   buildTeamsMessage,
   ensureCommitPrefix,
@@ -34,7 +35,6 @@ import {
   messageHasTicket,
   normalizeTicketKey,
   serviceFromRepo,
-  stripTicketPrefix,
   syncDependsOnSection,
   ticketUrl as buildTicketUrl,
   type TeamsMessage,
@@ -979,7 +979,9 @@ export async function runPr(opts: RunOptions, deps: RunDeps): Promise<RunResult>
 
   // ── 4. Teams ─────────────────────────────────────────────────────────────────
   log.step(`[5/5] Teams → ${TEAMS_CHAT_NAME}`);
-  const summary = issue?.summary?.trim() || stripTicketPrefix(prTitle, ticketKey);
+  // Desc: pesan commit dari -m (bagian msg:) > judul Jira > judul PR.
+  const fromCommit = commitMessage ? commitDesc(commitMessage, ticketKey) : '';
+  const summary = fromCommit || issue?.summary?.trim() || commitDesc(prTitle, ticketKey);
   const desc = buildDesc(summary, service);
   const message = buildTeamsMessage({ ticketKey, desc, prUrl, prs, ticketUrl: tUrl });
   const prUrls = prs.map((p) => p.url);

@@ -78,6 +78,17 @@ export function stripTicketPrefix(text: string, ticketKey: string): string {
   return text.replace(re, '').trim();
 }
 
+/**
+ * Ambil deskripsi dari pesan commit untuk Desc Teams.
+ * `ver:1.0.0 tkt:LOGIS-3944 msg:Resolve X` → `Resolve X`; `LOGIS-3944: Resolve X` → `Resolve X`.
+ * Hanya baris pertama yang dipakai. Mengembalikan '' bila tidak ada isi.
+ */
+export function commitDesc(message: string, ticketKey: string): string {
+  const first = (message.split(/\r?\n/)[0] ?? '').trim();
+  const m = first.match(/(?:^|\s)msg:\s*(.*)$/i);
+  return (m ? (m[1] ?? '') : stripTicketPrefix(first, ticketKey)).trim();
+}
+
 export function ticketUrl(jiraBaseUrl: string, ticketKey: string): string {
   return `${jiraBaseUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(ticketKey)}`;
 }
